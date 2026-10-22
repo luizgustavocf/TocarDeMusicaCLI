@@ -206,6 +206,7 @@ class Player:
         self.message = ''
         self.error_at = 0.0
         self.gen = 0
+        self.seek_gen = 0  # muda a cada (re)início do áudio; o vídeo reinicia junto
         self.base_frames = 0
         self.played = 0
         self.ring = np.zeros(RING, np.float32)
@@ -243,6 +244,8 @@ class Player:
             t.duration = info.get('duration') or t.duration
             t.info_path = path
             t.lyrics_artist = (info.get('artists') or [t.artist])[0]
+            sized = [f for f in info.get('formats') or [] if f.get('width') and f.get('height')]
+            t.aspect = sized[-1]['width'] / sized[-1]['height'] if sized else 16 / 9
 
     def play_index(self, i):
         with self.lock:
@@ -298,6 +301,7 @@ class Player:
             stdin=yt.stdout, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         yt.stdout.close()
         self.src = {'yt': yt, 'ff': ff, 'killed': False}
+        self.seek_gen += 1
         self.base_frames, self.played = int(sec * SR), 0
 
     def _kill_src(self):
@@ -425,6 +429,82 @@ class Player:
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
 
+# --------------------------------------------------------------------------- vídeo
+
+class VideoFeed:
+    """Decodifica o vídeo da faixa em baixa resolução, no mesmo ritmo do áudio.
+
+    Só roda enquanto o visual 'video' está ativo. Cada (re)início do áudio, troca de
+    faixa ou mudança no tamanho do terminal recomeça o vídeo na posição que está tocando.
+    """
+    FPS = 15
+
+    def __init__(self, player):
+        self.player = player
+        self.key = None
+        self.procs = ()
+        self.frame = None
+        self.frame_t = 0.0  # posição da música do quadro atual
+        self.status = ''
+
+    def size_for(self, track, cols, rows):
+        """Tamanho em pixels que cabe na área; cada caractere mostra 2 pixels na vertical."""
+        aspect = getattr(track, 'aspect', 16 / 9)
+        pw = cols
+        ph = round(pw / aspect)
+        if ph > rows * 2:
+            ph = rows * 2
+            pw = round(ph * aspect)
+        return max(pw, 2), max(ph // 2 * 2, 2)
+
+    def ensure(self, track, pw, ph):
+        key = (track.info_path, pw, ph, self.player.seek_gen)
+        if key == self.key:
+            return
+        self.stop()
+        self.key, self.frame, self.status = key, None, 'carregando vídeo…'
+        start = self.player.heard_position()
+        yt = subprocess.Popen(
+            [sys.executable, '-m', 'yt_dlp', '-q', '--no-warnings', '--no-progress',
+             '--load-info-json', track.info_path, '-o', '-',
+             '-f', 'bestvideo[height<=360][vcodec^=avc1]/bestvideo[height<=360]/worstvideo'],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        ff = subprocess.Popen(
+            ['ffmpeg', '-v', 'quiet', '-i', 'pipe:0', '-ss', f'{start:.2f}', '-an',
+             '-vf', f'fps={self.FPS},scale={pw}:{ph}:flags=area', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'],
+            stdin=yt.stdout, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        yt.stdout.close()
+        self.procs = (ff, yt)
+        threading.Thread(target=self._read, args=(key, ff, start, pw, ph), daemon=True).start()
+
+    def _read(self, key, ff, start, pw, ph):
+        size = pw * ph * 3
+        i = 0
+        while self.key == key:
+            data = ff.stdout.read(size)
+            if len(data) < size:
+                if self.key == key:
+                    self.status = 'vídeo indisponível' if i == 0 else ''
+                return
+            t = start + i / self.FPS
+            i += 1
+            while self.key == key and t > self.player.heard_position() + 0.03:  # espera o áudio alcançar
+                time.sleep(0.01)
+            if self.key == key:
+                self.frame = np.frombuffer(data, np.uint8).reshape(ph, pw, 3)
+                self.frame_t = t
+
+    def stop(self):
+        self.key = None
+        for p in self.procs:
+            try:
+                p.kill()
+                p.wait(timeout=1)
+            except Exception:
+                pass
+        self.procs = ()
+
+
 # --------------------------------------------------------------------------- visualizador
 
 def _hsv(h, s, v):
@@ -452,7 +532,7 @@ PALETTES = {
     'cinza': lambda t, x, ph: _ramp([(38, 38, 38), (255, 255, 255)], t),
 }
 GRAYS = ('preto-branco', 'cinza')
-MODES = ['barras', 'espelho', 'onda', 'letra', 'vazio']
+MODES = ['barras', 'espelho', 'onda', 'letra', 'video', 'vazio']
 BLOCKS = ' ▁▂▃▄▅▆▇█'
 # bits do caractere braille para (linha 0..3, coluna 0..1)
 BRAILLE = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]]
@@ -605,6 +685,30 @@ class Visualizer:
             lines.append(''.join(parts))
         return lines
 
+    def render_video(self, width, height, frame, status):
+        out = [''] * height
+        if frame is None:
+            msg = trunc(status or 'carregando vídeo…', width - 4)
+            out[height // 2] = ' ' * max((width - dwidth(msg)) // 2, 0) + DIM + msg
+            return out
+        px = (frame >> 3) << 3  # cores um pouco arredondadas: menos códigos de cor por linha
+        if self.palette_name in GRAYS:
+            lum = (px @ np.array([0.299, 0.587, 0.114])).astype(np.uint8)
+            px = np.repeat(lum[:, :, None], 3, axis=2)
+        ph, pw = px.shape[:2]
+        top = max((height - ph // 2) // 2, 0)
+        left = ' ' * max((width - pw) // 2, 0)
+        for r in range(min(ph // 2, height)):
+            parts, prev = [left], None
+            for up, dn in zip(px[2 * r].tolist(), px[2 * r + 1].tolist()):  # ▀: pixel de cima no texto, de baixo no fundo
+                if (up, dn) != prev:
+                    parts.append(f'\x1b[38;2;{up[0]};{up[1]};{up[2]};48;2;{dn[0]};{dn[1]};{dn[2]}m')
+                    prev = (up, dn)
+                parts.append('▀')
+            parts.append(RESET)
+            out[top + r] = ''.join(parts)
+        return out
+
     def _render_lyrics(self, width, height, track, pos):
         lines = track.lyrics if track else None
         out = [''] * height
@@ -756,7 +860,7 @@ def fmt_time(sec):
 SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
 
 
-def build_frame(player, viz, perf, cols, rows, now):
+def build_frame(player, viz, perf, video, cols, rows, now):
     t = player.track
     accent = _fg(viz._color(0.8, 0.5))
     buffering = player.state == 'playing' and player.played == 0
@@ -790,7 +894,12 @@ def build_frame(player, viz, perf, cols, rows, now):
     n, *_ = viz.layout(cols)
     viz.update(samples, n, 1 / FPS, active)
     heard = player.heard_position() if player.state == 'playing' else 0.0
-    body = viz.render(cols, viz_h, samples, t, heard)
+    if viz.mode_name == 'video' and player.state == 'playing' and t.info_path:
+        video.ensure(t, *video.size_for(t, cols, viz_h))
+        body = viz.render_video(cols, viz_h, video.frame, video.status)
+    else:
+        video.stop()
+        body = viz.render(cols, viz_h, samples, t, heard)
 
     pos = player.position() if player.state == 'playing' else 0
     dur = t.duration or 0
@@ -863,6 +972,7 @@ def run_ui(player, viz):
     out.flush()
     try:
         perf = PerfMonitor()
+        video = VideoFeed(player)
         player.play_index(0)
         size = None
         next_frame = time.time()
@@ -880,7 +990,7 @@ def run_ui(player, viz):
             if (cols, rows) != size:
                 size = (cols, rows)
                 out.write('\x1b[2J')
-            out.write(build_frame(player, viz, perf, cols, rows, now))
+            out.write(build_frame(player, viz, perf, video, cols, rows, now))
             out.flush()
 
             next_frame += 1 / FPS
@@ -893,6 +1003,8 @@ def run_ui(player, viz):
     except KeyboardInterrupt:
         pass
     finally:
+        if 'video' in locals():
+            video.stop()
         out.write('\x1b[0m\x1b[?25h\x1b[?1049l')
         out.flush()
         termios.tcsetattr(fd, termios.TCSADRAIN, old)

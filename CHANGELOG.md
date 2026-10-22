@@ -1,5 +1,38 @@
 # Notas de versão
 
+## v1.3.0 — VideoClipe
+
+Branch: `videoclipe` (criada a partir de `informacoes-de-performance`)
+
+### Novidades
+
+- **Visual `video`.** Passa o vídeo da música dentro do terminal, na área da animação:
+  - desenhado com meio-blocos coloridos (`▀`), dois pixels por caractere, mantendo a proporção do vídeo;
+  - sincronizado com o áudio (diferença de cerca de 10 ms nos testes), inclusive ao pausar,
+    avançar ou voltar 10 s e trocar de faixa;
+  - usa o vídeo da própria faixa, em até 360p e 15 quadros por segundo, para gastar pouca internet e CPU;
+  - só é baixado enquanto o visual `video` está aberto; ao trocar de visual, o download para;
+  - com as paletas `preto-branco` e `cinza`, o vídeo aparece em preto e branco;
+  - quando a faixa não tem vídeo, aparece "vídeo indisponível";
+  - o ajuste de sincronia das teclas `[` e `]` também vale para o vídeo.
+- A tecla `v` agora alterna entre barras → espelho → onda → letra → video → vazio.
+
+### Como usar
+
+```bash
+ytm --visual video bohemian rhapsody
+ytm --visual video --cores cinza bohemian rhapsody
+```
+
+### Observações
+
+- Em algumas músicas do YouTube Music o "vídeo" é só a capa do álbum parada; é o que o próprio
+  YouTube Music mostra para essa faixa. Para ver o clipe oficial, passe o link do clipe no YouTube.
+- Com o vídeo aberto, o tocador usa mais CPU e internet (cerca de 10% de CPU nos testes). Logo
+  depois de pular para outro ponto da música, a CPU sobe por um instante enquanto o vídeo se reposiciona.
+- O README foi atualizado: descrição do projeto, exemplos de `--visual letra` e `--visual video`,
+  explicação do visual `video` e ajuste de sincronia valendo também para o vídeo.
+
 ## v1.2.0 — Informações de performance
 
 Branch: `informacoes-de-performance` (criada a partir de `melhorias-nos-graficos`)
