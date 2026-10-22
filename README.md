@@ -28,7 +28,7 @@ ytm "https://music.youtube.com/playlist?list=..."   # link de música ou playlis
 ytm -s -r "https://music.youtube.com/playlist?list=..."  # aleatório, repetindo
 ```
 
-Opções: `--visual barras|espelho|onda`, `--cores neon|arco-iris|fogo|oceano|vu`,
+Opções: `--visual barras|espelho|onda|letra|vazio`, `--cores neon|arco-iris|fogo|oceano|vu|preto-branco|cinza`,
 `--volume 0-100`, `--sync MS`, `--single` (num link com `&list=`, toca só a música).
 
 ## Teclas
@@ -39,7 +39,7 @@ Opções: `--visual barras|espelho|onda`, `--cores neon|arco-iris|fogo|oceano|vu
 | ← / → | voltar / avançar 10 s |
 | n / p | próxima / anterior |
 | ↑ / ↓ (ou + / -) | volume |
-| v | trocar animação (barras, espelho, onda) |
+| v | trocar visual (barras, espelho, onda, letra, vazio) |
 | c | trocar paleta de cores |
 | [ / ] | ajustar sincronia da animação (±20 ms) |
 | r | repetir a fila |
@@ -51,8 +51,13 @@ Opções: `--visual barras|espelho|onda`, `--cores neon|arco-iris|fogo|oceano|vu
 As mesmas amostras que vão para o alto-falante passam por uma FFT, então as barras
 reagem ao que está tocando (graves à esquerda, agudos à direita) e as cores pulsam nas batidas.
 
+No visual `letra`, a letra é buscada no [LRCLIB](https://lrclib.net) e cada verso acende
+no momento em que é cantado, preenchendo da esquerda para a direita. Quando só existe a letra sem
+marcação de tempo, as linhas são distribuídas ao longo da música (aparece o aviso "tempo estimado").
+O visual `vazio` deixa a área da animação em branco.
+
 Com fones Bluetooth (AirPods etc.) o áudio chega com atraso; se a animação parecer adiantada,
-use `]` durante a reprodução ou inicie com `--sync 200`.
+use `]` durante a reprodução ou inicie com `--sync 200` (vale também para a letra).
 
 A primeira música leva alguns segundos para começar porque o YouTube impõe uma espera antes
 do download; as seguintes são pré-carregadas enquanto a atual toca.

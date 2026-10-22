@@ -11,6 +11,7 @@ import colorsys
 import json
 import os
 import random
+import re
 import select
 import shutil
 import signal
@@ -22,8 +23,10 @@ import threading
 import time
 import tty
 import unicodedata
+import urllib.request
+from bisect import bisect_right
 from dataclasses import dataclass, field
-from urllib.parse import parse_qs, quote_plus, urlparse
+from urllib.parse import parse_qs, quote_plus, urlencode, urlparse
 
 import numpy as np
 import sounddevice as sd
@@ -55,6 +58,8 @@ class Track:
     album: str = ''
     duration: float = 0
     info_path: str | None = None
+    lyrics: list | None = None  # [(segundos, linha)]; None = ainda buscando
+    lyrics_synced: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
@@ -126,6 +131,63 @@ def resolve(args):
     return [_entry_to_track(e) for e in found], 'YouTube Music'
 
 
+# --------------------------------------------------------------------------- letras
+
+LRC_TAG = re.compile(r'\[(\d+):(\d+(?:\.\d+)?)\]')
+TITLE_NOISE = re.compile(r'\s*[(\[][^)\]]*(official|video|clipe|lyric|letra|audio|áudio|remaster|4k|hd\b|visualizer)[^)\]]*[)\]]', re.I)
+
+
+def _lrclib(params):
+    req = urllib.request.Request('https://lrclib.net/api/search?' + urlencode(params),
+                                 headers={'User-Agent': 'ytm-cli (https://github.com/luizgustavocf/TocarDeMusicaCLI)'})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.load(r)
+
+
+def parse_lrc(text):
+    lines = []
+    for raw in text.splitlines():
+        words = LRC_TAG.sub('', raw).strip()
+        for m, s in LRC_TAG.findall(raw):
+            lines.append((int(m) * 60 + float(s), words))
+    return sorted(lines)
+
+
+def fetch_lyrics(title, artist, duration):
+    """Busca a letra no LRCLIB. Retorna ([(segundos, linha)], sincronizada).
+
+    Prefere letras sincronizadas com duração parecida com a da faixa (mesma versão
+    da gravação). Sem sincronia, distribui as linhas ao longo da música como estimativa.
+    """
+    title = TITLE_NOISE.sub('', title).strip()
+    artist = re.sub(r'\s*(official|vevo)$', '', artist or '', flags=re.I).strip()
+    queries = [{'track_name': title, 'artist_name': artist}]
+    parts = re.split(r'\s+[-–—]\s+', title, maxsplit=1)
+    if len(parts) == 2:  # vídeos no formato "Artista - Música"
+        queries.insert(0, {'track_name': parts[1], 'artist_name': parts[0]})
+    queries.append({'q': f'{artist} {title}'})
+
+    def score(r):
+        d = abs((r.get('duration') or 0) - duration) if duration else 0
+        synced = bool(r.get('syncedLyrics'))
+        return (0 if synced and d <= 4 else 1 if d <= 15 else 2, not synced, d)
+
+    for q in queries:
+        try:
+            results = [r for r in _lrclib(q) if r.get('syncedLyrics') or r.get('plainLyrics')]
+        except Exception:
+            continue
+        if not results:
+            continue
+        best = min(results, key=score)
+        if best.get('syncedLyrics'):
+            return parse_lrc(best['syncedLyrics']), True
+        plain = [l.strip() for l in best['plainLyrics'].splitlines()]
+        dur = duration or best.get('duration') or 180
+        return [(dur * (0.08 + 0.87 * i / max(len(plain), 1)), l) for i, l in enumerate(plain)], False
+    return [], False
+
+
 # --------------------------------------------------------------------------- player
 
 class Player:
@@ -179,6 +241,7 @@ class Player:
             t.album = info.get('album') or ''
             t.duration = info.get('duration') or t.duration
             t.info_path = path
+            t.lyrics_artist = (info.get('artists') or [t.artist])[0]
 
     def play_index(self, i):
         with self.lock:
@@ -199,6 +262,8 @@ class Player:
                 if gen == self.gen:
                     self.state, self.message, self.error_at = 'error', str(e).split('\n')[0][:200], time.time()
             return
+        if t.lyrics is None:
+            threading.Thread(target=self._fetch_lyrics, args=(t,), daemon=True).start()
         with self.lock:
             if gen != self.gen:
                 return
@@ -207,6 +272,13 @@ class Player:
             nxt = self.idx + 1
         if nxt < len(self.tracks):
             threading.Thread(target=self._prefetch, args=(self.tracks[nxt],), daemon=True).start()
+
+    @staticmethod
+    def _fetch_lyrics(t):
+        try:
+            t.lyrics, t.lyrics_synced = fetch_lyrics(t.title, getattr(t, 'lyrics_artist', t.artist), t.duration)
+        except Exception:
+            t.lyrics = []
 
     def _prefetch(self, t):
         try:
@@ -288,6 +360,14 @@ class Player:
                 self.ring[:n - first] = mono[first:]
                 self.widx += n
 
+    def heard_position(self):
+        """Posição da música que está saindo no alto-falante agora."""
+        try:
+            lat = self.stream.latency
+        except Exception:
+            lat = 0
+        return max(0.0, self.position() - lat - self.sync_ms / 1000)
+
     def recent(self, n):
         """Últimas n amostras que estão saindo no alto-falante agora."""
         try:
@@ -366,8 +446,12 @@ PALETTES = {
     'fogo': lambda t, x, ph: _ramp([(90, 0, 0), (220, 40, 0), (255, 140, 0), (255, 220, 60), (255, 255, 220)], t),
     'oceano': lambda t, x, ph: _ramp([(10, 30, 120), (0, 110, 220), (0, 210, 230), (180, 255, 250)], t),
     'vu': lambda t, x, ph: (60, 220, 90) if t < 0.6 else (240, 210, 40) if t < 0.85 else (250, 60, 50),
+    # tons de cinza: a base some num fundo preto; 'cinza' começa mais claro para a barra inteira aparecer
+    'preto-branco': lambda t, x, ph: _ramp([(0, 0, 0), (255, 255, 255)], t),
+    'cinza': lambda t, x, ph: _ramp([(38, 38, 38), (255, 255, 255)], t),
 }
-MODES = ['barras', 'espelho', 'onda']
+GRAYS = ('preto-branco', 'cinza')
+MODES = ['barras', 'espelho', 'onda', 'letra', 'vazio']
 BLOCKS = ' ▁▂▃▄▅▆▇█'
 # bits do caractere braille para (linha 0..3, coluna 0..1)
 BRAILLE = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]]
@@ -407,6 +491,8 @@ class Visualizer:
 
     def _color(self, t, x):
         rgb = list(PALETTES.values())[self.palette](t, x, self.phase)
+        if self.palette_name in GRAYS:  # clareia na batida para o topo continuar branco
+            return tuple(int(c + (255 - c) * 0.3 * self.beat) for c in rgb)
         k = 0.72 + 0.28 * self.beat  # pulsa no grave
         return tuple(min(255, int(c * k)) for c in rgb)
 
@@ -460,7 +546,11 @@ class Visualizer:
         margin = (width - (n * (bw + gap) - gap)) // 2
         return n, bw, gap, margin
 
-    def render(self, width, height, samples):
+    def render(self, width, height, samples, track=None, pos=0.0):
+        if self.mode_name == 'vazio':
+            return [''] * height
+        if self.mode_name == 'letra':
+            return self._render_lyrics(width, height, track, pos)
         if self.mode_name == 'onda':
             return self._render_wave(width, height, samples)
         if self.mode_name == 'espelho':
@@ -513,6 +603,48 @@ class Visualizer:
                     parts.append(' ' * gap)
             lines.append(''.join(parts))
         return lines
+
+    def _render_lyrics(self, width, height, track, pos):
+        lines = track.lyrics if track else None
+        out = [''] * height
+        mid = height // 2
+
+        def center(text, prefix):
+            text = trunc(text, width - 4)
+            return ' ' * max((width - dwidth(text)) // 2, 0) + prefix + text
+
+        if not lines:
+            msg = 'procurando letra…' if lines is None else 'letra não encontrada'
+            out[mid] = center(msg, DIM)
+            return out
+
+        times = [t for t, _ in lines]
+        cur = bisect_right(times, pos) - 1
+        for r in range(height):
+            diff = r - mid
+            if diff % 2:  # uma linha em branco entre os versos
+                continue
+            j = cur + diff // 2
+            if j == cur == -1:
+                out[r] = center('♪', _fg(self._color(0.6, 0.5)))
+            if not 0 <= j < len(lines):
+                continue
+            text = lines[j][1] or '♪'
+            if j != cur:
+                fade = max(0.18, 0.75 - 0.14 * abs(j - cur))
+                out[r] = center(text, _fg(tuple(int(c * fade) for c in self._color(0.7, 0.5))))
+                continue
+            # verso atual: preenche da esquerda para a direita acompanhando a voz
+            text = trunc(text, width - 4)
+            nxt = times[j + 1] if j + 1 < len(times) else lines[j][0] + 5
+            frac = min(max((pos - lines[j][0]) / max(nxt - lines[j][0], 0.1), 0), 1) if track.lyrics_synced else 1
+            k = int(len(text) * min(frac * 1.4, 1))  # a voz costuma terminar antes do próximo verso
+            sung, rest = text[:k], text[k:]
+            pad = ' ' * max((width - dwidth(text)) // 2, 0)
+            out[r] = f'{pad}{BOLD}{_fg(self._color(1.0, 0.5))}{sung}{_fg(self._color(0.55, 0.5))}{rest}'
+        if not track.lyrics_synced:
+            out[-1] = center('letra sem sincronia: tempo estimado', DIM)
+        return out
 
     def _render_wave(self, width, height, samples):
         dw, dh = width * 2, height * 4
@@ -621,7 +753,8 @@ def build_frame(player, viz, cols, rows, now):
     samples = player.recent(FFT) if active else np.zeros(FFT, np.float32)
     n, *_ = viz.layout(cols)
     viz.update(samples, n, 1 / FPS, active)
-    body = viz.render(cols, viz_h, samples)
+    heard = player.heard_position() if player.state == 'playing' else 0.0
+    body = viz.render(cols, viz_h, samples, t, heard)
 
     pos = player.position() if player.state == 'playing' else 0
     dur = t.duration or 0
