@@ -3,13 +3,14 @@
 Tocador de música para o terminal do macOS que busca no YouTube Music e toca uma música,
 uma fila de resultados, uma playlist ou um rádio, com animações que seguem o ritmo da música,
 letra sincronizada com a voz, o videoclipe direto no terminal e o consumo de CPU e memória do
-próprio tocador em tempo real.
+próprio tocador em tempo real. O macOS reconhece a música que está tocando: ela aparece no
+"Tocando Agora", na barra de menus e nas notificações.
 
 ## Instalação
 
 Precisa de [Homebrew](https://brew.sh) e Python 3. O `install.sh` instala o `ffmpeg` e o `deno`
 pelo Homebrew (se ainda não existirem) e cria um ambiente virtual com `yt-dlp`, `numpy`,
-`sounddevice` e `psutil`.
+`sounddevice`, `psutil` e `pyobjc` (para a integração com o macOS).
 
 ```bash
 ./install.sh
@@ -35,7 +36,8 @@ ytm --visual video bohemian rhapsody  # abre direto no videoclipe
 ```
 
 Opções: `--visual barras|espelho|onda|letra|video|vazio`, `--cores neon|arco-iris|fogo|oceano|vu|preto-branco|cinza`,
-`--volume 0-100`, `--sync MS`, `--single` (num link com `&list=`, toca só a música).
+`--volume 0-100`, `--sync MS`, `--single` (num link com `&list=`, toca só a música),
+`--sem-notificacao` (não avisa a cada música) e `--sem-mac` (desliga toda a integração com o macOS).
 
 ## Teclas
 
@@ -49,7 +51,7 @@ Opções: `--visual barras|espelho|onda|letra|video|vazio`, `--cores neon|arco-i
 | c | trocar paleta de cores |
 | [ / ] | ajustar sincronia da animação, da letra e do vídeo (±20 ms) |
 | r | repetir a fila |
-| h | mostrar / esconder CPU e memória |
+| h | mostrar / esconder o HUD de CPU e memória |
 | q | sair |
 
 ## Como funciona
@@ -71,10 +73,26 @@ link do clipe no YouTube (`ytm --visual video "https://www.youtube.com/watch?v=.
 
 O visual `vazio` deixa a área da animação em branco.
 
-No canto direito do título aparece quanto o tocador está usando de CPU e de memória, atualizado
-a cada segundo; a tecla `h` mostra ou esconde. A conta soma o próprio tocador e os processos que
-ele abre (`yt-dlp` e `ffmpeg`). A CPU segue o padrão do Monitor de Atividade: 100% equivale a um
-núcleo inteiro.
+No canto direito do título fica o HUD: quanto o tocador está usando de CPU e de memória,
+atualizado a cada segundo; a tecla `h` mostra ou esconde. A conta soma o próprio tocador e os
+processos que ele abre (`yt-dlp` e `ffmpeg`). A CPU segue o padrão do Monitor de Atividade: 100%
+equivale a um núcleo inteiro.
+
+## Integração com o macOS
+
+Ao tocar, o `ytm` aparece para o macOS como um tocador de música:
+
+- **Tocando Agora** (Central de Controle): título, artista, álbum, capa, duração e posição da música.
+  As teclas de mídia do teclado (⏯ ⏭ ⏮), os controles dos AirPods e a barra de posição do
+  Tocando Agora controlam o `ytm`.
+- **Barra de menus**: o ícone `♪ YTM` (`⏸ YTM` quando pausada). Clicando nele aparecem a música e o
+  artista e as opções Pausar/Continuar, Próxima, Anterior e Sair do ytm.
+- **Notificações**: cada música que começa a tocar gera uma notificação com título, artista,
+  álbum e duração.
+
+As notificações são enviadas pelo AppleScript e aparecem como "Editor de Scripts". Se não aparecerem,
+libere o Editor de Scripts em Ajustes do Sistema → Notificações. Para ver o Tocando Agora direto na
+barra de menus, ative em Ajustes do Sistema → Central de Controle → Tocando Agora.
 
 Com fones Bluetooth (AirPods etc.) o áudio chega com atraso; se a animação, a letra ou o vídeo
 parecerem adiantados, use `]` durante a reprodução ou inicie com `--sync 200`.

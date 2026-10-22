@@ -246,6 +246,7 @@ class Player:
             t.lyrics_artist = (info.get('artists') or [t.artist])[0]
             sized = [f for f in info.get('formats') or [] if f.get('width') and f.get('height')]
             t.aspect = sized[-1]['width'] / sized[-1]['height'] if sized else 16 / 9
+            t.thumbnail = info.get('thumbnail')
 
     def play_index(self, i):
         with self.lock:
@@ -912,7 +913,7 @@ def build_frame(player, viz, perf, video, cols, rows, now):
     vol = f'vol {int(player.volume * 100)}%'
     status = f' {DIM}{vol} · visual: {viz.mode_name} · cores: {viz.palette_name} · sync: {player.sync_ms:+d}ms' \
              f'{" · repetir" if player.repeat else ""}{RESET}'
-    keys = trunc('espaço pausa · ←/→ ±10s · n/p próx/ant · ↑/↓ volume · v visual · c cores · [/] sync · r repetir · h desempenho · q sair', cols - 2)
+    keys = trunc('espaço pausa · ←/→ ±10s · n/p próx/ant · ↑/↓ volume · v visual · c cores · [/] sync · r repetir · h hud · q sair', cols - 2)
     lines = [head1, head2, ''] + body + [prog, status, f' {DIM}{keys}{RESET}']
     lines = lines[:rows]
     return '\x1b[H' + '\n'.join(l + RESET + '\x1b[K' for l in lines) + '\x1b[J'
@@ -962,7 +963,7 @@ def handle_keys(data, player, viz, perf):
     return True
 
 
-def run_ui(player, viz):
+def run_ui(player, viz, mac=None):
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     out = sys.stdout
@@ -978,6 +979,10 @@ def run_ui(player, viz):
         next_frame = time.time()
         while True:
             now = time.time()
+            if mac:
+                mac.pump()
+                if mac.quit_requested:
+                    break
             if player.state == 'ended' and not player.next(manual=False):
                 finished = True
                 break
@@ -1005,10 +1010,23 @@ def run_ui(player, viz):
     finally:
         if 'video' in locals():
             video.stop()
+        if mac:
+            mac.close()
         out.write('\x1b[0m\x1b[?25h\x1b[?1049l')
         out.flush()
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
     return finished
+
+
+def start_mac(player, args):
+    """Liga a integração com o macOS; sem PyObjC ou com --sem-mac, o tocador segue sem ela."""
+    if args.sem_mac:
+        return None
+    try:
+        from macos import MacIntegration
+        return MacIntegration(player, notifications=not args.sem_notificacao)
+    except Exception:
+        return None
 
 
 def main():
@@ -1032,6 +1050,9 @@ def main():
     ap.add_argument('--volume', type=int, default=100, help='volume inicial 0-100 (padrão 100)')
     ap.add_argument('--visual', choices=MODES, default='barras', help='estilo da animação')
     ap.add_argument('--cores', choices=list(PALETTES), default='neon', help='paleta de cores')
+    ap.add_argument('--sem-mac', action='store_true',
+                    help='não integrar com o macOS (Tocando Agora, barra de menus e notificações)')
+    ap.add_argument('--sem-notificacao', action='store_true', help='não mostrar notificação a cada música')
     ap.add_argument('--sync', type=int, default=0, metavar='MS',
                     help='atraso extra da animação em ms (ex.: 200 para fones Bluetooth)')
     args = ap.parse_args()
@@ -1055,7 +1076,7 @@ def main():
     signal.signal(signal.SIGHUP, lambda *_: sys.exit(0))
     player = Player(tracks, label, args)
     try:
-        finished = run_ui(player, Visualizer(args.visual, args.cores))
+        finished = run_ui(player, Visualizer(args.visual, args.cores), start_mac(player, args))
     finally:
         player.close()
     if finished:

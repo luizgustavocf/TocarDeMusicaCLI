@@ -1,5 +1,33 @@
 # Notas de versão
 
+## v1.4.0 — Integração com o Mac
+
+Branch: `integracao-com-o-mac`
+
+### Novidades
+
+- **Tocando Agora do macOS.** Ao tocar, o sistema reconhece o `ytm` como tocador de música e mostra
+  título, artista, álbum, capa, duração e posição na Central de Controle.
+  - As teclas de mídia do teclado (⏯ ⏭ ⏮) e os controles dos AirPods pausam, continuam e trocam
+    de música.
+  - Arrastar a barra de posição no Tocando Agora pula para aquele ponto da música.
+- **Ícone na barra de menus.** Mostra `♪ YTM` (`⏸ YTM` quando pausada). O menu traz a música,
+  o artista e as opções Pausar/Continuar, Próxima, Anterior e Sair do ytm.
+- **Notificação a cada música** com título, artista, álbum e duração.
+- Novas opções: `--sem-notificacao` desliga só as notificações; `--sem-mac` desliga toda a integração.
+- Na linha de ajuda do rodapé, a tecla `h` passou de "h desempenho" para "h hud"; ela continua
+  mostrando e escondendo o HUD de CPU e memória.
+
+### Observações
+
+- Novas dependências: `pyobjc-framework-Cocoa` e `pyobjc-framework-MediaPlayer`. Quem já tem o
+  projeto instalado deve rodar `./install.sh` de novo. Sem elas, o tocador funciona normalmente,
+  só que sem a integração.
+- As notificações são enviadas pelo AppleScript e aparecem como "Editor de Scripts"; pode ser
+  preciso liberar o Editor de Scripts em Ajustes do Sistema → Notificações.
+- A integração usa cerca de 50 MB a mais de memória.
+- Enquanto o menu da barra está aberto, a animação no terminal fica parada; a música continua tocando.
+
 ## v1.3.0 — VideoClipe
 
 Branch: `videoclipe` (criada a partir de `informacoes-de-performance`)

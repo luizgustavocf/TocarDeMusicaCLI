@@ -1,4 +1,6 @@
 numpy
 psutil
+pyobjc-framework-Cocoa
+pyobjc-framework-MediaPlayer
 sounddevice
 yt-dlp[default]
