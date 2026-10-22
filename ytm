@@ -1,0 +1,4 @@
+#!/bin/sh
+# Atalho: roda o tocador com o ambiente virtual do projeto.
+DIR="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
+exec "$DIR/.venv/bin/python" "$DIR/ytm.py" "$@"
