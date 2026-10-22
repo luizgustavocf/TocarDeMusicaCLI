@@ -11,6 +11,7 @@ import colorsys
 import json
 import os
 import random
+import re
 import select
 import shutil
 import signal
@@ -22,10 +23,13 @@ import threading
 import time
 import tty
 import unicodedata
+import urllib.request
+from bisect import bisect_right
 from dataclasses import dataclass, field
-from urllib.parse import parse_qs, quote_plus, urlparse
+from urllib.parse import parse_qs, quote_plus, urlencode, urlparse
 
 import numpy as np
+import psutil
 import sounddevice as sd
 import yt_dlp
 
@@ -55,6 +59,8 @@ class Track:
     album: str = ''
     duration: float = 0
     info_path: str | None = None
+    lyrics: list | None = None  # [(segundos, linha)]; None = ainda buscando
+    lyrics_synced: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
@@ -126,6 +132,63 @@ def resolve(args):
     return [_entry_to_track(e) for e in found], 'YouTube Music'
 
 
+# --------------------------------------------------------------------------- letras
+
+LRC_TAG = re.compile(r'\[(\d+):(\d+(?:\.\d+)?)\]')
+TITLE_NOISE = re.compile(r'\s*[(\[][^)\]]*(official|video|clipe|lyric|letra|audio|áudio|remaster|4k|hd\b|visualizer)[^)\]]*[)\]]', re.I)
+
+
+def _lrclib(params):
+    req = urllib.request.Request('https://lrclib.net/api/search?' + urlencode(params),
+                                 headers={'User-Agent': 'ytm-cli (https://github.com/luizgustavocf/TocarDeMusicaCLI)'})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.load(r)
+
+
+def parse_lrc(text):
+    lines = []
+    for raw in text.splitlines():
+        words = LRC_TAG.sub('', raw).strip()
+        for m, s in LRC_TAG.findall(raw):
+            lines.append((int(m) * 60 + float(s), words))
+    return sorted(lines)
+
+
+def fetch_lyrics(title, artist, duration):
+    """Busca a letra no LRCLIB. Retorna ([(segundos, linha)], sincronizada).
+
+    Prefere letras sincronizadas com duração parecida com a da faixa (mesma versão
+    da gravação). Sem sincronia, distribui as linhas ao longo da música como estimativa.
+    """
+    title = TITLE_NOISE.sub('', title).strip()
+    artist = re.sub(r'\s*(official|vevo)$', '', artist or '', flags=re.I).strip()
+    queries = [{'track_name': title, 'artist_name': artist}]
+    parts = re.split(r'\s+[-–—]\s+', title, maxsplit=1)
+    if len(parts) == 2:  # vídeos no formato "Artista - Música"
+        queries.insert(0, {'track_name': parts[1], 'artist_name': parts[0]})
+    queries.append({'q': f'{artist} {title}'})
+
+    def score(r):
+        d = abs((r.get('duration') or 0) - duration) if duration else 0
+        synced = bool(r.get('syncedLyrics'))
+        return (0 if synced and d <= 4 else 1 if d <= 15 else 2, not synced, d)
+
+    for q in queries:
+        try:
+            results = [r for r in _lrclib(q) if r.get('syncedLyrics') or r.get('plainLyrics')]
+        except Exception:
+            continue
+        if not results:
+            continue
+        best = min(results, key=score)
+        if best.get('syncedLyrics'):
+            return parse_lrc(best['syncedLyrics']), True
+        plain = [l.strip() for l in best['plainLyrics'].splitlines()]
+        dur = duration or best.get('duration') or 180
+        return [(dur * (0.08 + 0.87 * i / max(len(plain), 1)), l) for i, l in enumerate(plain)], False
+    return [], False
+
+
 # --------------------------------------------------------------------------- player
 
 class Player:
@@ -143,6 +206,7 @@ class Player:
         self.message = ''
         self.error_at = 0.0
         self.gen = 0
+        self.seek_gen = 0  # muda a cada (re)início do áudio; o vídeo reinicia junto
         self.base_frames = 0
         self.played = 0
         self.ring = np.zeros(RING, np.float32)
@@ -179,6 +243,9 @@ class Player:
             t.album = info.get('album') or ''
             t.duration = info.get('duration') or t.duration
             t.info_path = path
+            t.lyrics_artist = (info.get('artists') or [t.artist])[0]
+            sized = [f for f in info.get('formats') or [] if f.get('width') and f.get('height')]
+            t.aspect = sized[-1]['width'] / sized[-1]['height'] if sized else 16 / 9
 
     def play_index(self, i):
         with self.lock:
@@ -199,6 +266,8 @@ class Player:
                 if gen == self.gen:
                     self.state, self.message, self.error_at = 'error', str(e).split('\n')[0][:200], time.time()
             return
+        if t.lyrics is None:
+            threading.Thread(target=self._fetch_lyrics, args=(t,), daemon=True).start()
         with self.lock:
             if gen != self.gen:
                 return
@@ -207,6 +276,13 @@ class Player:
             nxt = self.idx + 1
         if nxt < len(self.tracks):
             threading.Thread(target=self._prefetch, args=(self.tracks[nxt],), daemon=True).start()
+
+    @staticmethod
+    def _fetch_lyrics(t):
+        try:
+            t.lyrics, t.lyrics_synced = fetch_lyrics(t.title, getattr(t, 'lyrics_artist', t.artist), t.duration)
+        except Exception:
+            t.lyrics = []
 
     def _prefetch(self, t):
         try:
@@ -225,6 +301,7 @@ class Player:
             stdin=yt.stdout, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         yt.stdout.close()
         self.src = {'yt': yt, 'ff': ff, 'killed': False}
+        self.seek_gen += 1
         self.base_frames, self.played = int(sec * SR), 0
 
     def _kill_src(self):
@@ -288,6 +365,14 @@ class Player:
                 self.ring[:n - first] = mono[first:]
                 self.widx += n
 
+    def heard_position(self):
+        """Posição da música que está saindo no alto-falante agora."""
+        try:
+            lat = self.stream.latency
+        except Exception:
+            lat = 0
+        return max(0.0, self.position() - lat - self.sync_ms / 1000)
+
     def recent(self, n):
         """Últimas n amostras que estão saindo no alto-falante agora."""
         try:
@@ -344,6 +429,82 @@ class Player:
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
 
+# --------------------------------------------------------------------------- vídeo
+
+class VideoFeed:
+    """Decodifica o vídeo da faixa em baixa resolução, no mesmo ritmo do áudio.
+
+    Só roda enquanto o visual 'video' está ativo. Cada (re)início do áudio, troca de
+    faixa ou mudança no tamanho do terminal recomeça o vídeo na posição que está tocando.
+    """
+    FPS = 15
+
+    def __init__(self, player):
+        self.player = player
+        self.key = None
+        self.procs = ()
+        self.frame = None
+        self.frame_t = 0.0  # posição da música do quadro atual
+        self.status = ''
+
+    def size_for(self, track, cols, rows):
+        """Tamanho em pixels que cabe na área; cada caractere mostra 2 pixels na vertical."""
+        aspect = getattr(track, 'aspect', 16 / 9)
+        pw = cols
+        ph = round(pw / aspect)
+        if ph > rows * 2:
+            ph = rows * 2
+            pw = round(ph * aspect)
+        return max(pw, 2), max(ph // 2 * 2, 2)
+
+    def ensure(self, track, pw, ph):
+        key = (track.info_path, pw, ph, self.player.seek_gen)
+        if key == self.key:
+            return
+        self.stop()
+        self.key, self.frame, self.status = key, None, 'carregando vídeo…'
+        start = self.player.heard_position()
+        yt = subprocess.Popen(
+            [sys.executable, '-m', 'yt_dlp', '-q', '--no-warnings', '--no-progress',
+             '--load-info-json', track.info_path, '-o', '-',
+             '-f', 'bestvideo[height<=360][vcodec^=avc1]/bestvideo[height<=360]/worstvideo'],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        ff = subprocess.Popen(
+            ['ffmpeg', '-v', 'quiet', '-i', 'pipe:0', '-ss', f'{start:.2f}', '-an',
+             '-vf', f'fps={self.FPS},scale={pw}:{ph}:flags=area', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'],
+            stdin=yt.stdout, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        yt.stdout.close()
+        self.procs = (ff, yt)
+        threading.Thread(target=self._read, args=(key, ff, start, pw, ph), daemon=True).start()
+
+    def _read(self, key, ff, start, pw, ph):
+        size = pw * ph * 3
+        i = 0
+        while self.key == key:
+            data = ff.stdout.read(size)
+            if len(data) < size:
+                if self.key == key:
+                    self.status = 'vídeo indisponível' if i == 0 else ''
+                return
+            t = start + i / self.FPS
+            i += 1
+            while self.key == key and t > self.player.heard_position() + 0.03:  # espera o áudio alcançar
+                time.sleep(0.01)
+            if self.key == key:
+                self.frame = np.frombuffer(data, np.uint8).reshape(ph, pw, 3)
+                self.frame_t = t
+
+    def stop(self):
+        self.key = None
+        for p in self.procs:
+            try:
+                p.kill()
+                p.wait(timeout=1)
+            except Exception:
+                pass
+        self.procs = ()
+
+
 # --------------------------------------------------------------------------- visualizador
 
 def _hsv(h, s, v):
@@ -366,8 +527,12 @@ PALETTES = {
     'fogo': lambda t, x, ph: _ramp([(90, 0, 0), (220, 40, 0), (255, 140, 0), (255, 220, 60), (255, 255, 220)], t),
     'oceano': lambda t, x, ph: _ramp([(10, 30, 120), (0, 110, 220), (0, 210, 230), (180, 255, 250)], t),
     'vu': lambda t, x, ph: (60, 220, 90) if t < 0.6 else (240, 210, 40) if t < 0.85 else (250, 60, 50),
+    # tons de cinza: a base some num fundo preto; 'cinza' começa mais claro para a barra inteira aparecer
+    'preto-branco': lambda t, x, ph: _ramp([(0, 0, 0), (255, 255, 255)], t),
+    'cinza': lambda t, x, ph: _ramp([(38, 38, 38), (255, 255, 255)], t),
 }
-MODES = ['barras', 'espelho', 'onda']
+GRAYS = ('preto-branco', 'cinza')
+MODES = ['barras', 'espelho', 'onda', 'letra', 'video', 'vazio']
 BLOCKS = ' ▁▂▃▄▅▆▇█'
 # bits do caractere braille para (linha 0..3, coluna 0..1)
 BRAILLE = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]]
@@ -407,6 +572,8 @@ class Visualizer:
 
     def _color(self, t, x):
         rgb = list(PALETTES.values())[self.palette](t, x, self.phase)
+        if self.palette_name in GRAYS:  # clareia na batida para o topo continuar branco
+            return tuple(int(c + (255 - c) * 0.3 * self.beat) for c in rgb)
         k = 0.72 + 0.28 * self.beat  # pulsa no grave
         return tuple(min(255, int(c * k)) for c in rgb)
 
@@ -460,7 +627,11 @@ class Visualizer:
         margin = (width - (n * (bw + gap) - gap)) // 2
         return n, bw, gap, margin
 
-    def render(self, width, height, samples):
+    def render(self, width, height, samples, track=None, pos=0.0):
+        if self.mode_name == 'vazio':
+            return [''] * height
+        if self.mode_name == 'letra':
+            return self._render_lyrics(width, height, track, pos)
         if self.mode_name == 'onda':
             return self._render_wave(width, height, samples)
         if self.mode_name == 'espelho':
@@ -514,6 +685,72 @@ class Visualizer:
             lines.append(''.join(parts))
         return lines
 
+    def render_video(self, width, height, frame, status):
+        out = [''] * height
+        if frame is None:
+            msg = trunc(status or 'carregando vídeo…', width - 4)
+            out[height // 2] = ' ' * max((width - dwidth(msg)) // 2, 0) + DIM + msg
+            return out
+        px = (frame >> 3) << 3  # cores um pouco arredondadas: menos códigos de cor por linha
+        if self.palette_name in GRAYS:
+            lum = (px @ np.array([0.299, 0.587, 0.114])).astype(np.uint8)
+            px = np.repeat(lum[:, :, None], 3, axis=2)
+        ph, pw = px.shape[:2]
+        top = max((height - ph // 2) // 2, 0)
+        left = ' ' * max((width - pw) // 2, 0)
+        for r in range(min(ph // 2, height)):
+            parts, prev = [left], None
+            for up, dn in zip(px[2 * r].tolist(), px[2 * r + 1].tolist()):  # ▀: pixel de cima no texto, de baixo no fundo
+                if (up, dn) != prev:
+                    parts.append(f'\x1b[38;2;{up[0]};{up[1]};{up[2]};48;2;{dn[0]};{dn[1]};{dn[2]}m')
+                    prev = (up, dn)
+                parts.append('▀')
+            parts.append(RESET)
+            out[top + r] = ''.join(parts)
+        return out
+
+    def _render_lyrics(self, width, height, track, pos):
+        lines = track.lyrics if track else None
+        out = [''] * height
+        mid = height // 2
+
+        def center(text, prefix):
+            text = trunc(text, width - 4)
+            return ' ' * max((width - dwidth(text)) // 2, 0) + prefix + text
+
+        if not lines:
+            msg = 'procurando letra…' if lines is None else 'letra não encontrada'
+            out[mid] = center(msg, DIM)
+            return out
+
+        times = [t for t, _ in lines]
+        cur = bisect_right(times, pos) - 1
+        for r in range(height):
+            diff = r - mid
+            if diff % 2:  # uma linha em branco entre os versos
+                continue
+            j = cur + diff // 2
+            if j == cur == -1:
+                out[r] = center('♪', _fg(self._color(0.6, 0.5)))
+            if not 0 <= j < len(lines):
+                continue
+            text = lines[j][1] or '♪'
+            if j != cur:
+                fade = max(0.18, 0.75 - 0.14 * abs(j - cur))
+                out[r] = center(text, _fg(tuple(int(c * fade) for c in self._color(0.7, 0.5))))
+                continue
+            # verso atual: preenche da esquerda para a direita acompanhando a voz
+            text = trunc(text, width - 4)
+            nxt = times[j + 1] if j + 1 < len(times) else lines[j][0] + 5
+            frac = min(max((pos - lines[j][0]) / max(nxt - lines[j][0], 0.1), 0), 1) if track.lyrics_synced else 1
+            k = int(len(text) * min(frac * 1.4, 1))  # a voz costuma terminar antes do próximo verso
+            sung, rest = text[:k], text[k:]
+            pad = ' ' * max((width - dwidth(text)) // 2, 0)
+            out[r] = f'{pad}{BOLD}{_fg(self._color(1.0, 0.5))}{sung}{_fg(self._color(0.55, 0.5))}{rest}'
+        if not track.lyrics_synced:
+            out[-1] = center('letra sem sincronia: tempo estimado', DIM)
+        return out
+
     def _render_wave(self, width, height, samples):
         dw, dh = width * 2, height * 4
         span = 2048
@@ -555,6 +792,39 @@ class Visualizer:
         return lines
 
 
+# --------------------------------------------------------------------------- performance
+
+class PerfMonitor:
+    """Mede CPU e memória do tocador (Python + yt-dlp + ffmpeg) uma vez por segundo."""
+
+    def __init__(self):
+        self.cpu = 0.0  # % de um núcleo, como no Monitor de Atividade
+        self.mem = 0  # bytes (memória residente)
+        self._procs = {}
+        self.visible = True  # tecla h mostra/esconde
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self):
+        me = psutil.Process()
+        while True:
+            cpu = mem = 0
+            alive = {}
+            for p in [me] + me.children(recursive=True):
+                try:
+                    p = self._procs.get(p.pid, p)  # reaproveita o objeto para medir a CPU desde a última leitura
+                    with p.oneshot():
+                        cpu += p.cpu_percent(None)
+                        mem += p.memory_info().rss
+                    alive[p.pid] = p
+                except psutil.Error:
+                    pass
+            self._procs = alive
+            self.cpu, self.mem = cpu, mem
+            time.sleep(1)
+            while not self.visible:  # escondido: não gasta CPU medindo
+                time.sleep(0.2)
+
+
 # --------------------------------------------------------------------------- interface
 
 RESET, BOLD, DIM = '\x1b[0m', '\x1b[1m', '\x1b[2m'
@@ -590,7 +860,7 @@ def fmt_time(sec):
 SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
 
 
-def build_frame(player, viz, cols, rows, now):
+def build_frame(player, viz, perf, video, cols, rows, now):
     t = player.track
     accent = _fg(viz._color(0.8, 0.5))
     buffering = player.state == 'playing' and player.played == 0
@@ -601,27 +871,35 @@ def build_frame(player, viz, cols, rows, now):
     else:
         icon = '⏸' if player.paused else '▶'
 
-    right = f' {player.idx + 1}/{len(player.tracks)} · {player.label} '
-    right = trunc(right, max(cols // 3, 10))
-    title = trunc(t.title or 'Carregando…', cols - dwidth(right) - 5)
-    gap = cols - 3 - dwidth(title) - dwidth(right)
-    head1 = f' {accent}{icon}{RESET} {BOLD}{title}{RESET}{" " * max(gap, 1)}{DIM}{right}{RESET}'
+    stats = f'CPU {perf.cpu:4.1f}% · MEM {perf.mem / 2**20:.0f} MB ' if perf.visible else ''
+    title = trunc(t.title or 'Carregando…', cols - dwidth(stats) - 5)
+    gap = cols - 3 - dwidth(title) - dwidth(stats)
+    head1 = f' {accent}{icon}{RESET} {BOLD}{title}{RESET}{" " * max(gap, 1)}{DIM}{stats}{RESET}'
+
+    queue = trunc(f'{player.idx + 1}/{len(player.tracks)} · {player.label} ', max(cols // 3, 10))
     sub = ' · '.join(x for x in (t.artist, t.album) if x)
     if player.state == 'error':
-        sub = f'\x1b[31mErro: {player.message} — pulando…{RESET}'
-        head2 = '   ' + trunc(sub, cols + 20)
+        sub, color = f'Erro: {player.message} — pulando…', '\x1b[31m'
     elif player.state == 'loading' or buffering:
-        what = 'preparando áudio…' if buffering else 'buscando faixa…'
-        head2 = f'   {DIM}{trunc(sub + " · " if sub else "", cols - 30)}{what}{RESET}'
+        sub, color = (sub + ' · ' if sub else '') + ('preparando áudio…' if buffering else 'buscando faixa…'), DIM
     else:
-        head2 = f'   {DIM}{trunc(sub, cols - 4)}{RESET}'
+        color = DIM
+    sub = trunc(sub, cols - dwidth(queue) - 5)
+    gap = cols - 3 - dwidth(sub) - dwidth(queue)
+    head2 = f'   {color}{sub}{RESET}{" " * max(gap, 1)}{DIM}{queue}{RESET}'
 
     viz_h = max(rows - 7, 3)
     active = player.state == 'playing' and not player.paused
     samples = player.recent(FFT) if active else np.zeros(FFT, np.float32)
     n, *_ = viz.layout(cols)
     viz.update(samples, n, 1 / FPS, active)
-    body = viz.render(cols, viz_h, samples)
+    heard = player.heard_position() if player.state == 'playing' else 0.0
+    if viz.mode_name == 'video' and player.state == 'playing' and t.info_path:
+        video.ensure(t, *video.size_for(t, cols, viz_h))
+        body = viz.render_video(cols, viz_h, video.frame, video.status)
+    else:
+        video.stop()
+        body = viz.render(cols, viz_h, samples, t, heard)
 
     pos = player.position() if player.state == 'playing' else 0
     dur = t.duration or 0
@@ -634,13 +912,13 @@ def build_frame(player, viz, cols, rows, now):
     vol = f'vol {int(player.volume * 100)}%'
     status = f' {DIM}{vol} · visual: {viz.mode_name} · cores: {viz.palette_name} · sync: {player.sync_ms:+d}ms' \
              f'{" · repetir" if player.repeat else ""}{RESET}'
-    keys = trunc('espaço pausa · ←/→ ±10s · n/p próx/ant · ↑/↓ volume · v visual · c cores · [/] sync · r repetir · q sair', cols - 2)
+    keys = trunc('espaço pausa · ←/→ ±10s · n/p próx/ant · ↑/↓ volume · v visual · c cores · [/] sync · r repetir · h desempenho · q sair', cols - 2)
     lines = [head1, head2, ''] + body + [prog, status, f' {DIM}{keys}{RESET}']
     lines = lines[:rows]
     return '\x1b[H' + '\n'.join(l + RESET + '\x1b[K' for l in lines) + '\x1b[J'
 
 
-def handle_keys(data, player, viz):
+def handle_keys(data, player, viz, perf):
     i = 0
     while i < len(data):
         seq = data[i:i + 3]
@@ -679,6 +957,8 @@ def handle_keys(data, player, viz):
             player.sync_ms += 20
         elif ch in 'rR':
             player.repeat = not player.repeat
+        elif ch in 'hH':
+            perf.visible = not perf.visible
     return True
 
 
@@ -691,6 +971,8 @@ def run_ui(player, viz):
     out.write('\x1b[?1049h\x1b[?25l\x1b[2J')
     out.flush()
     try:
+        perf = PerfMonitor()
+        video = VideoFeed(player)
         player.play_index(0)
         size = None
         next_frame = time.time()
@@ -708,7 +990,7 @@ def run_ui(player, viz):
             if (cols, rows) != size:
                 size = (cols, rows)
                 out.write('\x1b[2J')
-            out.write(build_frame(player, viz, cols, rows, now))
+            out.write(build_frame(player, viz, perf, video, cols, rows, now))
             out.flush()
 
             next_frame += 1 / FPS
@@ -716,11 +998,13 @@ def run_ui(player, viz):
             if timeout < 0:
                 next_frame, timeout = time.time(), 0
             r, _, _ = select.select([fd], [], [], timeout)
-            if r and not handle_keys(os.read(fd, 64).decode(errors='ignore'), player, viz):
+            if r and not handle_keys(os.read(fd, 64).decode(errors='ignore'), player, viz, perf):
                 break
     except KeyboardInterrupt:
         pass
     finally:
+        if 'video' in locals():
+            video.stop()
         out.write('\x1b[0m\x1b[?25h\x1b[?1049l')
         out.flush()
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
