@@ -1,11 +1,14 @@
 # ytm — YouTube Music no terminal
 
 Tocador de música para o terminal do macOS que busca no YouTube Music e toca uma música,
-uma fila de resultados, uma playlist ou um rádio, com animações que seguem o ritmo da música.
+uma fila de resultados, uma playlist ou um rádio, com animações que seguem o ritmo da música,
+letra sincronizada com a voz e o consumo de CPU e memória do próprio tocador em tempo real.
 
 ## Instalação
 
-Precisa de [Homebrew](https://brew.sh) e Python 3.
+Precisa de [Homebrew](https://brew.sh) e Python 3. O `install.sh` instala o `ffmpeg` e o `deno`
+pelo Homebrew (se ainda não existirem) e cria um ambiente virtual com `yt-dlp`, `numpy`,
+`sounddevice` e `psutil`.
 
 ```bash
 ./install.sh
@@ -41,8 +44,9 @@ Opções: `--visual barras|espelho|onda|letra|vazio`, `--cores neon|arco-iris|fo
 | ↑ / ↓ (ou + / -) | volume |
 | v | trocar visual (barras, espelho, onda, letra, vazio) |
 | c | trocar paleta de cores |
-| [ / ] | ajustar sincronia da animação (±20 ms) |
+| [ / ] | ajustar sincronia da animação e da letra (±20 ms) |
 | r | repetir a fila |
+| h | mostrar / esconder CPU e memória |
 | q | sair |
 
 ## Como funciona
@@ -56,8 +60,13 @@ no momento em que é cantado, preenchendo da esquerda para a direita. Quando só
 marcação de tempo, as linhas são distribuídas ao longo da música (aparece o aviso "tempo estimado").
 O visual `vazio` deixa a área da animação em branco.
 
-Com fones Bluetooth (AirPods etc.) o áudio chega com atraso; se a animação parecer adiantada,
-use `]` durante a reprodução ou inicie com `--sync 200` (vale também para a letra).
+No canto direito do título aparece quanto o tocador está usando de CPU e de memória, atualizado
+a cada segundo; a tecla `h` mostra ou esconde. A conta soma o próprio tocador e os processos que
+ele abre (`yt-dlp` e `ffmpeg`). A CPU segue o padrão do Monitor de Atividade: 100% equivale a um
+núcleo inteiro.
+
+Com fones Bluetooth (AirPods etc.) o áudio chega com atraso; se a animação ou a letra parecerem
+adiantadas, use `]` durante a reprodução ou inicie com `--sync 200`.
 
 A primeira música leva alguns segundos para começar porque o YouTube impõe uma espera antes
 do download; as seguintes são pré-carregadas enquanto a atual toca.

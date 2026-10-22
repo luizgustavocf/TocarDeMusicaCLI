@@ -1,5 +1,27 @@
 # Notas de versão
 
+## v1.2.0 — Informações de performance
+
+Branch: `informacoes-de-performance` (criada a partir de `melhorias-nos-graficos`)
+
+### Novidades
+
+- **CPU e memória em tempo real.** No lado oposto ao nome da música aparece quanto o tocador
+  está usando do computador, por exemplo `CPU 7.2% · MEM 262 MB`, atualizado a cada segundo.
+  - A conta inclui o tocador e os processos que ele abre para tocar a música (`yt-dlp` e `ffmpeg`).
+  - A CPU segue o padrão do Monitor de Atividade do macOS: 100% equivale a um núcleo inteiro.
+  - A memória é a memória residente (RSS) somada desses processos.
+  - A tecla `h` mostra ou esconde essas informações. Escondidas, a medição fica pausada e
+    não gasta CPU. A linha de ajuda no rodapé passou a mostrar "h desempenho".
+- A posição na fila e o nome da fila (por exemplo `1/2 · YouTube Music`) passaram para o lado
+  direito da linha do artista.
+
+### Observações
+
+- Nova dependência: `psutil`. Quem já tem o projeto instalado deve rodar `./install.sh` de novo.
+- O README foi atualizado: descrição do projeto, dependências instaladas pelo `install.sh`, tecla
+  `h` e ajuste de sincronia valendo também para a letra.
+
 ## v1.1.0 — Melhorias nos gráficos
 
 Branch: `melhorias-nos-graficos`

@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from urllib.parse import parse_qs, quote_plus, urlencode, urlparse
 
 import numpy as np
+import psutil
 import sounddevice as sd
 import yt_dlp
 
@@ -687,6 +688,39 @@ class Visualizer:
         return lines
 
 
+# --------------------------------------------------------------------------- performance
+
+class PerfMonitor:
+    """Mede CPU e memória do tocador (Python + yt-dlp + ffmpeg) uma vez por segundo."""
+
+    def __init__(self):
+        self.cpu = 0.0  # % de um núcleo, como no Monitor de Atividade
+        self.mem = 0  # bytes (memória residente)
+        self._procs = {}
+        self.visible = True  # tecla h mostra/esconde
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self):
+        me = psutil.Process()
+        while True:
+            cpu = mem = 0
+            alive = {}
+            for p in [me] + me.children(recursive=True):
+                try:
+                    p = self._procs.get(p.pid, p)  # reaproveita o objeto para medir a CPU desde a última leitura
+                    with p.oneshot():
+                        cpu += p.cpu_percent(None)
+                        mem += p.memory_info().rss
+                    alive[p.pid] = p
+                except psutil.Error:
+                    pass
+            self._procs = alive
+            self.cpu, self.mem = cpu, mem
+            time.sleep(1)
+            while not self.visible:  # escondido: não gasta CPU medindo
+                time.sleep(0.2)
+
+
 # --------------------------------------------------------------------------- interface
 
 RESET, BOLD, DIM = '\x1b[0m', '\x1b[1m', '\x1b[2m'
@@ -722,7 +756,7 @@ def fmt_time(sec):
 SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
 
 
-def build_frame(player, viz, cols, rows, now):
+def build_frame(player, viz, perf, cols, rows, now):
     t = player.track
     accent = _fg(viz._color(0.8, 0.5))
     buffering = player.state == 'playing' and player.played == 0
@@ -733,20 +767,22 @@ def build_frame(player, viz, cols, rows, now):
     else:
         icon = '⏸' if player.paused else '▶'
 
-    right = f' {player.idx + 1}/{len(player.tracks)} · {player.label} '
-    right = trunc(right, max(cols // 3, 10))
-    title = trunc(t.title or 'Carregando…', cols - dwidth(right) - 5)
-    gap = cols - 3 - dwidth(title) - dwidth(right)
-    head1 = f' {accent}{icon}{RESET} {BOLD}{title}{RESET}{" " * max(gap, 1)}{DIM}{right}{RESET}'
+    stats = f'CPU {perf.cpu:4.1f}% · MEM {perf.mem / 2**20:.0f} MB ' if perf.visible else ''
+    title = trunc(t.title or 'Carregando…', cols - dwidth(stats) - 5)
+    gap = cols - 3 - dwidth(title) - dwidth(stats)
+    head1 = f' {accent}{icon}{RESET} {BOLD}{title}{RESET}{" " * max(gap, 1)}{DIM}{stats}{RESET}'
+
+    queue = trunc(f'{player.idx + 1}/{len(player.tracks)} · {player.label} ', max(cols // 3, 10))
     sub = ' · '.join(x for x in (t.artist, t.album) if x)
     if player.state == 'error':
-        sub = f'\x1b[31mErro: {player.message} — pulando…{RESET}'
-        head2 = '   ' + trunc(sub, cols + 20)
+        sub, color = f'Erro: {player.message} — pulando…', '\x1b[31m'
     elif player.state == 'loading' or buffering:
-        what = 'preparando áudio…' if buffering else 'buscando faixa…'
-        head2 = f'   {DIM}{trunc(sub + " · " if sub else "", cols - 30)}{what}{RESET}'
+        sub, color = (sub + ' · ' if sub else '') + ('preparando áudio…' if buffering else 'buscando faixa…'), DIM
     else:
-        head2 = f'   {DIM}{trunc(sub, cols - 4)}{RESET}'
+        color = DIM
+    sub = trunc(sub, cols - dwidth(queue) - 5)
+    gap = cols - 3 - dwidth(sub) - dwidth(queue)
+    head2 = f'   {color}{sub}{RESET}{" " * max(gap, 1)}{DIM}{queue}{RESET}'
 
     viz_h = max(rows - 7, 3)
     active = player.state == 'playing' and not player.paused
@@ -767,13 +803,13 @@ def build_frame(player, viz, cols, rows, now):
     vol = f'vol {int(player.volume * 100)}%'
     status = f' {DIM}{vol} · visual: {viz.mode_name} · cores: {viz.palette_name} · sync: {player.sync_ms:+d}ms' \
              f'{" · repetir" if player.repeat else ""}{RESET}'
-    keys = trunc('espaço pausa · ←/→ ±10s · n/p próx/ant · ↑/↓ volume · v visual · c cores · [/] sync · r repetir · q sair', cols - 2)
+    keys = trunc('espaço pausa · ←/→ ±10s · n/p próx/ant · ↑/↓ volume · v visual · c cores · [/] sync · r repetir · h desempenho · q sair', cols - 2)
     lines = [head1, head2, ''] + body + [prog, status, f' {DIM}{keys}{RESET}']
     lines = lines[:rows]
     return '\x1b[H' + '\n'.join(l + RESET + '\x1b[K' for l in lines) + '\x1b[J'
 
 
-def handle_keys(data, player, viz):
+def handle_keys(data, player, viz, perf):
     i = 0
     while i < len(data):
         seq = data[i:i + 3]
@@ -812,6 +848,8 @@ def handle_keys(data, player, viz):
             player.sync_ms += 20
         elif ch in 'rR':
             player.repeat = not player.repeat
+        elif ch in 'hH':
+            perf.visible = not perf.visible
     return True
 
 
@@ -824,6 +862,7 @@ def run_ui(player, viz):
     out.write('\x1b[?1049h\x1b[?25l\x1b[2J')
     out.flush()
     try:
+        perf = PerfMonitor()
         player.play_index(0)
         size = None
         next_frame = time.time()
@@ -841,7 +880,7 @@ def run_ui(player, viz):
             if (cols, rows) != size:
                 size = (cols, rows)
                 out.write('\x1b[2J')
-            out.write(build_frame(player, viz, cols, rows, now))
+            out.write(build_frame(player, viz, perf, cols, rows, now))
             out.flush()
 
             next_frame += 1 / FPS
@@ -849,7 +888,7 @@ def run_ui(player, viz):
             if timeout < 0:
                 next_frame, timeout = time.time(), 0
             r, _, _ = select.select([fd], [], [], timeout)
-            if r and not handle_keys(os.read(fd, 64).decode(errors='ignore'), player, viz):
+            if r and not handle_keys(os.read(fd, 64).decode(errors='ignore'), player, viz, perf):
                 break
     except KeyboardInterrupt:
         pass
