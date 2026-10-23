@@ -1,5 +1,63 @@
 # Notas de versão
 
+## v1.5.0 — Melhorias no vídeo
+
+Branch: `melhorias-no-video`
+
+### Novidades
+
+- **Vídeo com mais qualidade.** O visual `video` ganhou três níveis de qualidade:
+  - `alta` (padrão): vídeo em até 720p, 30 quadros por segundo e 4 pixels por caractere (2×2), usando
+    os caracteres de quadrante (`▘▝▖▗▌▐▀▄▚▞▛▜▙▟`). Para cada caractere, o tocador escolhe o desenho e as
+    duas cores que mais se aproximam da imagem, o que dobra a resolução na horizontal e deixa
+    contornos mais nítidos. A imagem também recebe uma leve nitidez.
+  - `media`: até 480p, 24 quadros por segundo, cores sem arredondamento e redução de tamanho mais
+    suave (lanczos).
+  - `baixa`: o comportamento da v1.3.0 (até 360p, 15 quadros por segundo), que gasta menos CPU.
+- **Opção de configuração** `--qualidade-video alta|media|baixa`.
+- **Tecla `g`** troca a qualidade durante a música; o vídeo recomeça no ponto que está tocando.
+- **Motor `timg`** (padrão quando o `timg` está instalado; o `install.sh` instala). O `ffmpeg` reduz
+  o vídeo para o tamanho da área e o [timg](https://timg.sh) transforma em caracteres, mandando a
+  cada quadro só as células que mudaram. Com isso o volume de dados enviado ao terminal caiu muito
+  (num trecho do teste: cerca de 0,05 MB/s com o `timg`, contra 1,76 MB/s com o motor interno).
+  - O `ytm` recebe os quadros do `timg` por um pipe e escreve cada um na área do vídeo junto com o
+    resto da tela, então os dois nunca escrevem no terminal ao mesmo tempo.
+  - A sincronia com o áudio se ajusta sozinha: se o vídeo começar atrasado, ele recomeça um pouco
+    mais à frente sem apagar a imagem (nos testes, a menos de 10 ms do áudio).
+  - Opção `--motor-video timg|interno` e tecla `m` para alternar durante a música.
+- A linha de status mostra a qualidade e o motor em uso, por exemplo `visual: video (alta · timg)`.
+
+### Correções
+
+- **Texto da tela virando quadrantes depois de um tempo de vídeo.** A saída do `ytm` estava correta
+  (conferida num emulador de terminal por 75 s), mas o painel de terminal do app Claude se perdia
+  com o volume de caracteres coloridos (cerca de 3 MB/s numa janela grande). O motor `timg`
+  resolve isso reduzindo os dados enviados.
+- A tela agora posiciona cada linha no lugar dela a cada quadro, em vez de depender de quebras de linha.
+- Mensagens de bibliotecas (como avisos do áudio) não aparecem mais no meio da tela: enquanto o
+  tocador está aberto, elas vão para o arquivo `ytm.log` na pasta temporária do sistema.
+- Áreas lisas do vídeo na qualidade `alta` são desenhadas com uma cor só, sem a textura de pontinhos
+  causada pelo ruído do vídeo.
+
+### Como usar
+
+```bash
+ytm --visual video bohemian rhapsody                         # qualidade alta (padrão)
+ytm --visual video --qualidade-video media bohemian rhapsody
+ytm --visual video --motor-video interno bohemian rhapsody   # desenho próprio do ytm
+```
+
+### Observações
+
+- Nos testes, com o terminal em 120×36, o uso de CPU com o vídeo aberto foi de cerca de 9% (`baixa`),
+  11–12% (`media`) e 20–25% (`alta`). As três mantiveram o vídeo a menos de 15 ms do áudio.
+- A qualidade `alta` baixa mais dados da internet e envia mais dados ao terminal; em terminais
+  mais lentos ou conexões fracas, prefira `media`.
+- Nova dependência: `timg` (Homebrew). Sem ele, o tocador usa o motor interno.
+- Integrado ao `ytm`, o `timg` usa blocos de caracteres (quadrantes na `alta`, meio-bloco nas
+  outras). Os modos de imagem real do `timg` (kitty, iTerm2, sixel) não funcionam com a saída num
+  pipe: ele só desenha o primeiro quadro.
+
 ## v1.4.0 — Integração com o Mac
 
 Branch: `integracao-com-o-mac`

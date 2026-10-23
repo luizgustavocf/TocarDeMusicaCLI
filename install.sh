@@ -3,6 +3,7 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 command -v ffmpeg >/dev/null || { echo "Instalando ffmpeg..."; brew install ffmpeg; }
+command -v timg >/dev/null || { echo "Instalando timg (motor do visual de vídeo)..."; brew install timg; }
 command -v deno >/dev/null || { echo "Instalando deno (necessário para o yt-dlp resolver o YouTube)..."; brew install deno; }
 python3 -m venv "$DIR/.venv"
 "$DIR/.venv/bin/pip" install -q --upgrade pip

@@ -7,6 +7,7 @@ então a animação acompanha exatamente o que está tocando.
 """
 
 import argparse
+import collections
 import colorsys
 import json
 import os
@@ -432,53 +433,108 @@ class Player:
 
 # --------------------------------------------------------------------------- vídeo
 
+# alta: vídeo em 720p e 4 pixels por caractere (2 colunas x 2 linhas), com leve nitidez.
+# media: mais quadros e cores sem arredondar. baixa: como na v1.3.0.
+# A tecla g percorre nesta ordem.
+VIDEO_QUALITY = {
+    'alta': {'height': 720, 'fps': 30, 'quad': True, 'step': 1, 'filter': 'lanczos,unsharp=3:3:0.6'},
+    'media': {'height': 480, 'fps': 24, 'quad': False, 'step': 1, 'filter': 'lanczos'},
+    'baixa': {'height': 360, 'fps': 15, 'quad': False, 'step': 8, 'filter': 'area'},
+}
+
+
 class VideoFeed:
-    """Decodifica o vídeo da faixa em baixa resolução, no mesmo ritmo do áudio.
+    """Decodifica o vídeo da faixa no tamanho da área, no mesmo ritmo do áudio.
 
     Só roda enquanto o visual 'video' está ativo. Cada (re)início do áudio, troca de
-    faixa ou mudança no tamanho do terminal recomeça o vídeo na posição que está tocando.
+    faixa, de qualidade ou do tamanho do terminal recomeça o vídeo na posição que está tocando.
     """
-    FPS = 15
 
-    def __init__(self, player):
+    def __init__(self, player, quality='alta', engine='timg'):
         self.player = player
+        self.quality = quality
+        self.engine = engine if engine != 'timg' or shutil.which('timg') else 'interno'
         self.key = None
         self.procs = ()
+        self.lock = threading.Lock()
+        self.chunks = collections.deque()  # timg: (posição na música, quadro já em códigos de terminal)
+        self.timg_shown = False
+        self.lead = 1.5  # timg: começa à frente do áudio para compensar a partida (ajustado sozinho)
+        self.session = (None, 0.0)  # timg: (faixa e tamanho, início) da sessão atual
         self.frame = None
         self.frame_t = 0.0  # posição da música do quadro atual
+        self.frame_quad = False  # o quadro atual foi decodificado para quadrantes
         self.status = ''
 
-    def size_for(self, track, cols, rows):
-        """Tamanho em pixels que cabe na área; cada caractere mostra 2 pixels na vertical."""
-        aspect = getattr(track, 'aspect', 16 / 9)
-        pw = cols
-        ph = round(pw / aspect)
-        if ph > rows * 2:
-            ph = rows * 2
-            pw = round(ph * aspect)
-        return max(pw, 2), max(ph // 2 * 2, 2)
+    @property
+    def settings(self):
+        return VIDEO_QUALITY[self.quality]
 
-    def ensure(self, track, pw, ph):
-        key = (track.info_path, pw, ph, self.player.seek_gen)
+    def cycle_quality(self):
+        names = list(VIDEO_QUALITY)
+        self.quality = names[(names.index(self.quality) + 1) % len(names)]
+
+    def cycle_engine(self):
+        if shutil.which('timg'):
+            self.engine = 'interno' if self.engine == 'timg' else 'timg'
+
+    @staticmethod
+    def cells_for(track, cols, rows):
+        """Tamanho em caracteres que cabe na área, mantendo a proporção do vídeo
+        (um caractere tem o dobro de altura que de largura)."""
+        aspect = getattr(track, 'aspect', 16 / 9)
+        w = cols
+        h = w / aspect / 2
+        if h > rows:
+            h = rows
+            w = h * 2 * aspect
+        return max(int(round(w)), 1), max(int(h), 1)
+
+    def size_for(self, track, cols, rows):
+        """Tamanho em pixels: meio-bloco mostra 1x2 pixels por caractere; quadrantes, 2x2."""
+        w, h = self.cells_for(track, cols, rows)
+        return w * (2 if self.settings['quad'] else 1), h * 2
+
+    def _ytdlp(self, track):
+        h = self.settings['height']
+        return subprocess.Popen(
+            [sys.executable, '-m', 'yt_dlp', '-q', '--no-warnings', '--no-progress',
+             '--load-info-json', track.info_path, '-o', '-',
+             '-f', f'bestvideo[height<={h}][vcodec^=avc1]/bestvideo[height<={h}]/worstvideo'],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    def _scale_filter(self, pw, ph):
+        q = self.settings
+        scale = q['filter'].split(',', 1)
+        return f'fps={q["fps"]},scale={pw}:{ph}:flags={scale[0]}' + (',' + scale[1] if len(scale) > 1 else '')
+
+    def ensure(self, track, cols, rows):
+        if self.engine == 'timg':
+            return self._ensure_timg(track, cols, rows)
+        pw, ph = self.size_for(track, cols, rows)
+        key = (track.info_path, pw, ph, self.player.seek_gen, self.quality, 'interno')
         if key == self.key:
             return
         self.stop()
         self.key, self.frame, self.status = key, None, 'carregando vídeo…'
+        q = self.settings
         start = self.player.heard_position()
         yt = subprocess.Popen(
             [sys.executable, '-m', 'yt_dlp', '-q', '--no-warnings', '--no-progress',
              '--load-info-json', track.info_path, '-o', '-',
-             '-f', 'bestvideo[height<=360][vcodec^=avc1]/bestvideo[height<=360]/worstvideo'],
+             '-f', f'bestvideo[height<={q["height"]}][vcodec^=avc1]/bestvideo[height<={q["height"]}]/worstvideo'],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        scale = q['filter'].split(',', 1)
+        vf = f'fps={q["fps"]},scale={pw}:{ph}:flags={scale[0]}' + (',' + scale[1] if len(scale) > 1 else '')
         ff = subprocess.Popen(
             ['ffmpeg', '-v', 'quiet', '-i', 'pipe:0', '-ss', f'{start:.2f}', '-an',
-             '-vf', f'fps={self.FPS},scale={pw}:{ph}:flags=area', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'],
+             '-vf', vf, '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'],
             stdin=yt.stdout, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         yt.stdout.close()
         self.procs = (ff, yt)
-        threading.Thread(target=self._read, args=(key, ff, start, pw, ph), daemon=True).start()
+        threading.Thread(target=self._read, args=(key, ff, start, pw, ph, q['fps'], q['quad']), daemon=True).start()
 
-    def _read(self, key, ff, start, pw, ph):
+    def _read(self, key, ff, start, pw, ph, fps, quad):
         size = pw * ph * 3
         i = 0
         while self.key == key:
@@ -487,13 +543,119 @@ class VideoFeed:
                 if self.key == key:
                     self.status = 'vídeo indisponível' if i == 0 else ''
                 return
-            t = start + i / self.FPS
+            t = start + i / fps
             i += 1
             while self.key == key and t > self.player.heard_position() + 0.03:  # espera o áudio alcançar
                 time.sleep(0.01)
             if self.key == key:
                 self.frame = np.frombuffer(data, np.uint8).reshape(ph, pw, 3)
                 self.frame_t = t
+                self.frame_quad = quad
+
+    # -- motor timg ----------------------------------------------------------
+    # O ffmpeg reduz o vídeo para o tamanho exato da área e o timg o transforma em
+    # caracteres, mandando a cada quadro só as células que mudaram. O ytm recebe esses
+    # quadros por um pipe e os escreve no terminal junto com o resto da tela, na hora
+    # em que o áudio chega neles.
+
+    def _ensure_timg(self, track, cols, rows):
+        w, h = self.cells_for(track, cols, rows)
+        # o timg corrige sozinho a proporção dos caracteres: ele recebe pixels quadrados
+        pw = w * (2 if self.settings['quad'] else 1)
+        ph = max(round(pw / getattr(track, 'aspect', 16 / 9)) // 2 * 2, 2)
+        key = (track.info_path, pw, ph, self.player.seek_gen, self.quality, 'timg')
+        self.area = (cols, rows, w, h)
+        if key == self.key:
+            return
+        self.stop()
+        same_picture = self.session[0] == (track.info_path, pw, ph, self.quality)
+        self.session = ((track.info_path, pw, ph, self.quality), time.time())
+        self.key, self.status = key, 'carregando vídeo…'
+        if not same_picture:  # mesmo vídeo e tamanho (ex.: reajuste de sincronia): a imagem atual fica até o novo quadro
+            self.timg_shown = False
+        with self.lock:
+            self.chunks.clear()
+        q = self.settings
+        start = self.player.heard_position() + self.lead
+        yt = self._ytdlp(track)
+        ff = subprocess.Popen(
+            ['ffmpeg', '-v', 'quiet', '-i', 'pipe:0', '-ss', f'{start:.2f}', '-an', '-vf', self._scale_filter(pw, ph),
+             '-c:v', 'rawvideo', '-pix_fmt', 'rgb24', '-f', 'nut', 'pipe:1'],
+            stdin=yt.stdout, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        yt.stdout.close()
+        tg = subprocess.Popen(
+            ['timg', '-V', '-p', 'q' if q['quad'] else 'h', '-g', f'{w}x{h}', '-o', '/dev/stdout', '-'],
+            stdin=ff.stdout, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        ff.stdout.close()
+        self.procs = (tg, ff, yt)
+        threading.Thread(target=self._read_timg, args=(key, tg, start, q['fps']), daemon=True).start()
+
+    def _read_timg(self, key, tg, start, fps):
+        sep = None  # o timg volta N linhas ("ESC [ N A") para desenhar cada quadro novo
+        buf, i = b'', 0
+
+        def push(frame):
+            nonlocal i
+            text = frame.decode('utf-8', 'replace').replace('\x1b[?25l', '').replace('\x1b[?25h', '')
+            with self.lock:
+                self.chunks.append((start + i / fps, text))
+            i += 1
+            while self.key == key and len(self.chunks) > fps * 2:  # não deixa acumular mais que ~2 s
+                time.sleep(0.02)
+
+        while self.key == key:
+            data = tg.stdout.read1(1 << 16)
+            if not data:
+                break
+            buf += data
+            if sep is None:
+                found = re.search(rb'\x1b\[(\d+)A', buf)
+                if not found:
+                    continue
+                sep = found.group(0)
+                cols, rows, w, _ = self.area
+                self.area = (cols, rows, w, int(found.group(1)))  # altura real usada pelo timg
+            *frames, buf = buf.split(sep)
+            for frame in frames:
+                push(frame)
+        if self.key == key:
+            if buf.strip():
+                push(buf)
+            if i == 0:
+                self.status = 'vídeo indisponível'
+
+    def take_timg(self, top):
+        """Códigos de terminal dos quadros que já chegaram na hora do áudio, posicionados na área."""
+        heard = self.player.heard_position()
+        out = []
+        with self.lock:
+            while self.chunks and self.chunks[0][0] <= heard + 0.03:
+                t, text = self.chunks.popleft()
+                out.append(text)
+            late = heard - t if out else 0
+        if late > 0.25 and time.time() - self.session[1] < 8:
+            # a partida demorou mais que o previsto e o timg segue no ritmo dele, então o atraso
+            # não se recupera: recomeça mais à frente (o quadro atual fica na tela)
+            self.lead = min(self.lead + late + 0.2, 4.0)
+            self.stop()
+        if not out:
+            return ''
+        cols, rows, w, h = self.area
+        row, col = top + (rows - h) // 2, (cols - w) // 2 + 1
+        pos, nl = f'\x1b[{row};{col}H', f'\n\x1b[{col}G'
+        return ''.join(pos + text.replace('\n', nl) for text in out) + RESET
+
+    def timg_body(self, rows, drawing):
+        """Linhas da área do vídeo: None mantém o que o timg desenhou."""
+        if self.timg_shown:
+            return [None] * rows
+        if drawing:  # primeiro quadro: limpa a área antes de desenhar
+            self.timg_shown = True
+            return [''] * rows
+        out = [''] * rows
+        msg = self.status or 'carregando vídeo…'
+        out[rows // 2] = ' ' * max((self.area[0] - dwidth(msg)) // 2, 0) + DIM + msg if hasattr(self, 'area') else msg
+        return out
 
     def stop(self):
         self.key = None
@@ -504,6 +666,38 @@ class VideoFeed:
             except Exception:
                 pass
         self.procs = ()
+
+
+# Quadrantes: cada caractere cobre 2x2 pixels, pintados com 2 cores (texto e fundo).
+# Bits: 1 = alto-esquerda, 2 = alto-direita, 4 = baixo-esquerda, 8 = baixo-direita (pixels na cor do texto).
+QUAD_CHARS = np.array(list(' ▘▝▀▖▌▞▛▗▚▐▜▄▙▟█'))
+QUAD_MASKS = np.arange(1, 8)  # cada divisão em 2 grupos aparece uma vez (a máscara m e 15 - m são a mesma divisão)
+QUAD_W = ((QUAD_MASKS[:, None] >> np.arange(4)) & 1).astype(np.float32)  # (7 máscaras, 4 pixels)
+
+
+def _quadrants(px):
+    """Para cada bloco 2x2, escolhe o desenho de quadrante e as 2 cores que mais se aproximam da imagem."""
+    rows, cols = px.shape[0] // 2, px.shape[1] // 2
+    cells = px[:rows * 2, :cols * 2].reshape(rows, 2, cols, 2, 3).transpose(0, 2, 1, 3, 4).reshape(rows, cols, 4, 3)
+    n_fg = QUAD_W.sum(1)[:, None]
+    sum_fg = np.einsum('mk,rckx->rcmx', QUAD_W, cells)
+    fg = sum_fg / n_fg
+    bg = (cells.sum(2)[:, :, None] - sum_fg) / (4 - n_fg)
+    pred = QUAD_W[:, :, None] * fg[:, :, :, None] + (1 - QUAD_W[:, :, None]) * bg[:, :, :, None]
+    err = ((cells[:, :, None] - pred) ** 2).sum((3, 4))
+    best = err.argmin(2)
+    pick = best[:, :, None, None]
+    fg = np.take_along_axis(fg, pick, 2)[:, :, 0]
+    bg = np.take_along_axis(bg, pick, 2)[:, :, 0]
+    chars = QUAD_CHARS[QUAD_MASKS[best]]
+    # bloco quase liso (variação média < ~10 por canal): uma cor só. Evita pontinhos com o ruído
+    # do vídeo nas áreas lisas e gera menos códigos de cor.
+    mean = cells.mean(2)
+    flat = ((cells - mean[:, :, None]) ** 2).sum((2, 3)) < 4 * 3 * 10 ** 2
+    chars = np.where(flat, ' ', chars)
+    fg = np.where(flat[:, :, None], mean, fg)
+    bg = np.where(flat[:, :, None], mean, bg)
+    return chars, fg, bg
 
 
 # --------------------------------------------------------------------------- visualizador
@@ -686,26 +880,33 @@ class Visualizer:
             lines.append(''.join(parts))
         return lines
 
-    def render_video(self, width, height, frame, status):
+    def render_video(self, width, height, frame, status, quad=False, step=1):
         out = [''] * height
         if frame is None:
             msg = trunc(status or 'carregando vídeo…', width - 4)
             out[height // 2] = ' ' * max((width - dwidth(msg)) // 2, 0) + DIM + msg
             return out
-        px = (frame >> 3) << 3  # cores um pouco arredondadas: menos códigos de cor por linha
+        px = frame.astype(np.float32)
         if self.palette_name in GRAYS:
-            lum = (px @ np.array([0.299, 0.587, 0.114])).astype(np.uint8)
-            px = np.repeat(lum[:, :, None], 3, axis=2)
-        ph, pw = px.shape[:2]
-        top = max((height - ph // 2) // 2, 0)
-        left = ' ' * max((width - pw) // 2, 0)
-        for r in range(min(ph // 2, height)):
+            px = np.repeat((px @ np.array([0.299, 0.587, 0.114], np.float32))[:, :, None], 3, axis=2)
+        if quad:
+            chars, fg, bg = _quadrants(px)
+        else:  # ▀: pixel de cima na cor do texto, o de baixo no fundo
+            fg, bg = px[0::2], px[1::2]
+            chars = np.full(fg.shape[:2], '▀')
+        # step > 1 arredonda as cores: menos códigos de cor por linha, menos dados para o terminal
+        fg = (np.clip(fg + 0.5, 0, 255).astype(np.uint8) // step * step).tolist()
+        bg = (np.clip(bg + 0.5, 0, 255).astype(np.uint8) // step * step).tolist()
+        rows, cols = chars.shape
+        top = max((height - rows) // 2, 0)
+        left = ' ' * max((width - cols) // 2, 0)
+        for r in range(min(rows, height)):
             parts, prev = [left], None
-            for up, dn in zip(px[2 * r].tolist(), px[2 * r + 1].tolist()):  # ▀: pixel de cima no texto, de baixo no fundo
+            for ch, up, dn in zip(chars[r].tolist(), fg[r], bg[r]):
                 if (up, dn) != prev:
                     parts.append(f'\x1b[38;2;{up[0]};{up[1]};{up[2]};48;2;{dn[0]};{dn[1]};{dn[2]}m')
                     prev = (up, dn)
-                parts.append('▀')
+                parts.append(ch)
             parts.append(RESET)
             out[top + r] = ''.join(parts)
         return out
@@ -895,9 +1096,14 @@ def build_frame(player, viz, perf, video, cols, rows, now):
     n, *_ = viz.layout(cols)
     viz.update(samples, n, 1 / FPS, active)
     heard = player.heard_position() if player.state == 'playing' else 0.0
+    timg_out = ''
     if viz.mode_name == 'video' and player.state == 'playing' and t.info_path:
-        video.ensure(t, *video.size_for(t, cols, viz_h))
-        body = viz.render_video(cols, viz_h, video.frame, video.status)
+        video.ensure(t, cols, viz_h)
+        if video.engine == 'timg':
+            timg_out = video.take_timg(top=4)
+            body = video.timg_body(viz_h, bool(timg_out))
+        else:
+            body = viz.render_video(cols, viz_h, video.frame, video.status, video.frame_quad, video.settings['step'])
     else:
         video.stop()
         body = viz.render(cols, viz_h, samples, t, heard)
@@ -911,15 +1117,20 @@ def build_frame(player, viz, perf, video, cols, rows, now):
     prog = f' {left} {accent}{"━" * k}●{RESET}{DIM}{"─" * (bar_w - 1 - k)}{RESET} {rt}'
 
     vol = f'vol {int(player.volume * 100)}%'
-    status = f' {DIM}{vol} · visual: {viz.mode_name} · cores: {viz.palette_name} · sync: {player.sync_ms:+d}ms' \
+    shown = f'video ({video.quality} · {video.engine})' if viz.mode_name == 'video' else viz.mode_name
+    status = f' {DIM}{vol} · visual: {shown} · cores: {viz.palette_name} · sync: {player.sync_ms:+d}ms' \
              f'{" · repetir" if player.repeat else ""}{RESET}'
-    keys = trunc('espaço pausa · ←/→ ±10s · n/p próx/ant · ↑/↓ volume · v visual · c cores · [/] sync · r repetir · h hud · q sair', cols - 2)
+    keys = trunc('espaço pausa · ←/→ ±10s · n/p próx/ant · ↑/↓ volume · v visual · g qualidade do vídeo · m motor do vídeo · c cores · [/] sync · r repetir · h hud · q sair', cols - 2)
     lines = [head1, head2, ''] + body + [prog, status, f' {DIM}{keys}{RESET}']
     lines = lines[:rows]
-    return '\x1b[H' + '\n'.join(l + RESET + '\x1b[K' for l in lines) + '\x1b[J'
+    # cada linha vai para sua posição; None deixa a linha como está (área desenhada pelo timg)
+    screen = ''.join(f'\x1b[{i + 1};1H{l}{RESET}\x1b[K' for i, l in enumerate(lines) if l is not None)
+    if len(lines) < rows:
+        screen += f'\x1b[{len(lines) + 1};1H\x1b[J'
+    return screen + timg_out
 
 
-def handle_keys(data, player, viz, perf):
+def handle_keys(data, player, viz, perf, video):
     i = 0
     while i < len(data):
         seq = data[i:i + 3]
@@ -960,20 +1171,30 @@ def handle_keys(data, player, viz, perf):
             player.repeat = not player.repeat
         elif ch in 'hH':
             perf.visible = not perf.visible
+        elif ch in 'gG':
+            video.cycle_quality()
+        elif ch in 'mM':
+            video.cycle_engine()
     return True
 
 
-def run_ui(player, viz, mac=None):
+def run_ui(player, viz, mac=None, video_quality='alta', video_engine='timg'):
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     out = sys.stdout
     finished = False
     tty.setcbreak(fd)
+    # mensagens de bibliotecas (ex.: avisos do áudio) iriam para o meio da tela: vão para um log
+    log_path = os.path.join(tempfile.gettempdir(), 'ytm.log')
+    saved_stderr = os.dup(2)
+    log = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.dup2(log, 2)
+    os.close(log)
     out.write('\x1b[?1049h\x1b[?25l\x1b[2J')
     out.flush()
     try:
         perf = PerfMonitor()
-        video = VideoFeed(player)
+        video = VideoFeed(player, video_quality, video_engine)
         player.play_index(0)
         size = None
         next_frame = time.time()
@@ -1003,7 +1224,7 @@ def run_ui(player, viz, mac=None):
             if timeout < 0:
                 next_frame, timeout = time.time(), 0
             r, _, _ = select.select([fd], [], [], timeout)
-            if r and not handle_keys(os.read(fd, 64).decode(errors='ignore'), player, viz, perf):
+            if r and not handle_keys(os.read(fd, 64).decode(errors='ignore'), player, viz, perf, video):
                 break
     except KeyboardInterrupt:
         pass
@@ -1015,6 +1236,8 @@ def run_ui(player, viz, mac=None):
         out.write('\x1b[0m\x1b[?25h\x1b[?1049l')
         out.flush()
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        os.dup2(saved_stderr, 2)
+        os.close(saved_stderr)
     return finished
 
 
@@ -1050,6 +1273,12 @@ def main():
     ap.add_argument('--volume', type=int, default=100, help='volume inicial 0-100 (padrão 100)')
     ap.add_argument('--visual', choices=MODES, default='barras', help='estilo da animação')
     ap.add_argument('--cores', choices=list(PALETTES), default='neon', help='paleta de cores')
+    ap.add_argument('--motor-video', choices=['timg', 'interno'], default='timg',
+                    help='quem desenha o visual video: timg (padrão, se instalado; redesenha só o que muda) '
+                         'ou interno (o desenho próprio do ytm)')
+    ap.add_argument('--qualidade-video', choices=list(VIDEO_QUALITY), default='alta',
+                    help='qualidade do visual video: alta (720p, 30 qps, 4 pixels por caractere), '
+                         'media (480p, 24 qps) ou baixa (360p, 15 qps); padrão alta')
     ap.add_argument('--sem-mac', action='store_true',
                     help='não integrar com o macOS (Tocando Agora, barra de menus e notificações)')
     ap.add_argument('--sem-notificacao', action='store_true', help='não mostrar notificação a cada música')
@@ -1076,7 +1305,8 @@ def main():
     signal.signal(signal.SIGHUP, lambda *_: sys.exit(0))
     player = Player(tracks, label, args)
     try:
-        finished = run_ui(player, Visualizer(args.visual, args.cores), start_mac(player, args))
+        finished = run_ui(player, Visualizer(args.visual, args.cores), start_mac(player, args), args.qualidade_video,
+                          args.motor_video)
     finally:
         player.close()
     if finished:
