@@ -8,9 +8,11 @@ próprio tocador em tempo real. O macOS reconhece a música que está tocando: e
 
 ## Instalação
 
-Precisa de [Homebrew](https://brew.sh) e Python 3. O `install.sh` instala o `ffmpeg`, o `timg` e o
-`deno` pelo Homebrew (se ainda não existirem) e cria um ambiente virtual com `yt-dlp`, `numpy`,
-`sounddevice`, `psutil` e `pyobjc` (para a integração com o macOS).
+Precisa de [Homebrew](https://brew.sh) e Python 3.10 ou mais novo. O `install.sh` instala o `ffmpeg`,
+o `timg` e o `deno` pelo Homebrew (se ainda não existirem) e cria um ambiente virtual com `yt-dlp`,
+`numpy`, `sounddevice`, `psutil` e `pyobjc` (para a integração com o macOS). O `python3` que vem com o
+macOS é o 3.9, antigo demais: o `install.sh` procura um Python 3.10+ e, se não achar, instala o
+Python 3.13 pelo Homebrew.
 
 ```bash
 ./install.sh
