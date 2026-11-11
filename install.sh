@@ -1,44 +1,40 @@
 #!/bin/sh
-# Instala as dependências do ytm num ambiente virtual local.
+# Instala o que o ytm precisa: programas pelo Homebrew, pacotes do R numa pasta local e o
+# ajudante em Swift (áudio e integração com o macOS).
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
-command -v ffmpeg >/dev/null || { echo "Instalando ffmpeg..."; brew install ffmpeg; }
-command -v timg >/dev/null || { echo "Instalando timg (motor do visual de vídeo)..."; brew install timg; }
-command -v deno >/dev/null || { echo "Instalando deno (necessário para o yt-dlp resolver o YouTube)..."; brew install deno; }
 
-# O ytm precisa de Python 3.10 ou mais novo (o python3 que vem com o macOS é o 3.9).
-python_ok() {
-    "$1" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null
+need() {  # need <comando> <fórmula do Homebrew> <para que serve>
+    command -v "$1" >/dev/null || { echo "Instalando $2 ($3)..."; brew install "$2"; }
 }
+need Rscript r "a linguagem do tocador"
+need ffmpeg ffmpeg "decodifica o áudio e o vídeo"
+need yt-dlp yt-dlp "busca e baixa do YouTube"
+need deno deno "necessário para o yt-dlp resolver o YouTube"
+need timg timg "motor do visual de vídeo"
 
-find_python() {
-    for py in python3.14 python3.13 python3.12 python3.11 python3.10 python3; do
-        for cand in "/opt/homebrew/bin/$py" "/usr/local/bin/$py" "$py"; do
-            if command -v "$cand" >/dev/null 2>&1 && python_ok "$cand"; then
-                command -v "$cand"
-                return 0
-            fi
-        done
-    done
-    return 1
-}
-
-PYTHON="$(find_python)" || {
-    echo "Instalando Python 3.13 (o ytm precisa de Python 3.10 ou mais novo)..."
-    brew install python@3.13
-    PYTHON="$(find_python)" || { echo "Erro: não encontrei um Python 3.10 ou mais novo." >&2; exit 1; }
-}
-echo "Usando $("$PYTHON" --version) ($PYTHON)"
-
-# Recria o ambiente virtual se ele foi feito com um Python antigo.
-if [ -x "$DIR/.venv/bin/python" ] && ! python_ok "$DIR/.venv/bin/python"; then
-    echo "Recriando o ambiente virtual (foi criado com um Python antigo)..."
-    rm -rf "$DIR/.venv"
+if ! command -v swiftc >/dev/null; then
+    echo "Erro: falta o compilador Swift, usado no ajudante de áudio." >&2
+    echo "Instale as ferramentas de linha de comando da Apple com: xcode-select --install" >&2
+    exit 1
 fi
 
-"$PYTHON" -m venv "$DIR/.venv"
-"$DIR/.venv/bin/pip" install -q --upgrade pip
-"$DIR/.venv/bin/pip" install -q --upgrade -r "$DIR/requirements.txt"
+echo "Instalando os pacotes do R (processx, jsonlite, ps)..."
+mkdir -p "$DIR/.Rlib"
+Rscript --no-init-file -e '
+lib <- commandArgs(TRUE)[1]
+pkgs <- c("processx", "jsonlite", "ps")
+missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), lib.loc = lib, quietly = TRUE)]
+if (length(missing)) install.packages(missing, lib = lib, repos = "https://cloud.r-project.org", quiet = TRUE)
+for (p in pkgs) if (!requireNamespace(p, lib.loc = lib, quietly = TRUE)) stop("não foi possível instalar o pacote ", p)
+' "$DIR/.Rlib"
+
+echo "Compilando o ajudante (ytm-helper)..."
+swiftc -O -suppress-warnings "$DIR/helper/ytm-helper.swift" -o "$DIR/helper/ytm-helper"
+
 chmod +x "$DIR/ytm"
+if [ -d "$DIR/.venv" ]; then
+    echo "A pasta .venv é da versão em Python (1.x) e não é mais usada; pode apagar com: rm -rf \"$DIR/.venv\""
+fi
 echo "Pronto! Para usar o comando 'ytm' de qualquer lugar:"
 echo "  ln -sf \"$DIR/ytm\" /opt/homebrew/bin/ytm"

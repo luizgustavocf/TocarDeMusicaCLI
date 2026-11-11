@@ -1,4 +1,4 @@
 #!/bin/sh
-# Atalho: roda o tocador com o ambiente virtual do projeto.
+# Atalho: roda o tocador (em R) com os pacotes instalados pelo install.sh.
 DIR="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
-exec "$DIR/.venv/bin/python" "$DIR/ytm.py" "$@"
+exec Rscript --no-init-file "$DIR/ytm.R" "$@"

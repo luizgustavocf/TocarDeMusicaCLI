@@ -8,11 +8,13 @@ próprio tocador em tempo real. O macOS reconhece a música que está tocando: e
 
 ## Instalação
 
-Precisa de [Homebrew](https://brew.sh) e Python 3.10 ou mais novo. O `install.sh` instala o `ffmpeg`,
-o `timg` e o `deno` pelo Homebrew (se ainda não existirem) e cria um ambiente virtual com `yt-dlp`,
-`numpy`, `sounddevice`, `psutil` e `pyobjc` (para a integração com o macOS). O `python3` que vem com o
-macOS é o 3.9, antigo demais: o `install.sh` procura um Python 3.10+ e, se não achar, instala o
-Python 3.13 pelo Homebrew.
+O `ytm` é escrito em R, com um pequeno ajudante em Swift para o que o R não faz sozinho no macOS
+(tocar o áudio e a integração com o sistema). Precisa de [Homebrew](https://brew.sh) e das ferramentas
+de linha de comando da Apple (`xcode-select --install`), que trazem o compilador Swift.
+
+O `install.sh` instala pelo Homebrew o que ainda não existir (`r`, `ffmpeg`, `yt-dlp`, `deno` e
+`timg`), instala os pacotes do R (`processx`, `jsonlite` e `ps`) na pasta `.Rlib` do projeto e compila
+o ajudante `helper/ytm-helper`.
 
 ```bash
 ./install.sh
@@ -64,9 +66,19 @@ Opções: `--visual barras|espelho|onda|letra|video|vazio`, `--cores neon|arco-i
 
 ## Como funciona
 
-`yt-dlp` encontra e baixa o áudio, o `ffmpeg` decodifica para PCM e o `sounddevice` toca.
-As mesmas amostras que vão para o alto-falante passam por uma FFT, então as barras
-reagem ao que está tocando (graves à esquerda, agudos à direita) e as cores pulsam nas batidas.
+O `yt-dlp` encontra e baixa o áudio e o `ffmpeg` decodifica para PCM. O R lê essas amostras, aplica
+o volume e as entrega ao ajudante `ytm-helper`, que toca pelo sistema de áudio do macOS e avisa quanto
+já saiu no alto-falante. As mesmas amostras passam por uma FFT no R, então as barras reagem ao que
+está tocando (graves à esquerda, agudos à direita) e as cores pulsam nas batidas.
+
+O R entrega o áudio só um pouco à frente do que está tocando (0,25 s). Por isso a pausa é na hora, e
+o trecho já entregue que ainda não tinha tocado é guardado e reenviado quando a música continua.
+
+| Peça | Arquivo | O que faz |
+|---|---|---|
+| Tocador | `ytm.R` e `R/*.R` | opções, busca, fila, letra, visuais, vídeo, HUD e tela |
+| Ajudante | `helper/ytm-helper.swift` | áudio, Tocando Agora, teclas de mídia, barra de menus e tamanho do terminal |
+| Atalho | `ytm` | roda o `ytm.R` com o `Rscript` |
 
 No visual `letra`, a letra é buscada no [LRCLIB](https://lrclib.net) e cada verso acende
 no momento em que é cantado, preenchendo da esquerda para a direita. Quando só existe a letra sem
@@ -79,11 +91,11 @@ Quanto maior o terminal, maior a imagem.
 
 A qualidade é escolhida com `--qualidade-video` ou trocada durante a música com a tecla `g`:
 
-| Qualidade | Vídeo baixado | Quadros por segundo | Pixels por caractere | CPU nos testes |
+| Qualidade | Vídeo baixado | Quadros por segundo | Pixels por caractere | CPU nos testes (timg / interno) |
 |---|---|---|---|---|
-| `alta` (padrão) | até 720p | 30 | 4 (2×2, com leve nitidez) | ~20–25% |
-| `media` | até 480p | 24 | 2 (1×2) | ~11–12% |
-| `baixa` | até 360p | 15 | 2 (1×2), cores arredondadas | ~9% |
+| `alta` (padrão) | até 720p | 30 | 4 (2×2, com leve nitidez) | ~34% / ~51% |
+| `media` | até 480p | 24 | 2 (1×2) | ~22% / ~35% |
+| `baixa` | até 360p | 15 | 2 (1×2), cores arredondadas | ~21% / ~30% |
 
 Na qualidade `alta`, cada caractere mostra 2×2 pixels usando os caracteres de quadrante
 (`▘▝▖▗▌▐▀▄▚▞▛▜▙▟`), o que dobra a resolução na horizontal e deixa contornos e textos do vídeo mais
@@ -92,7 +104,8 @@ nítidos. Ela usa mais CPU, internet e dados enviados ao terminal; se a imagem e
 Quem desenha o vídeo é escolhido com `--motor-video` ou a tecla `m`:
 
 - `timg` (padrão): o `ffmpeg` reduz o vídeo e o [timg](https://timg.sh) o transforma em caracteres,
-  mandando a cada quadro só o que mudou. Envia bem menos dados ao terminal, o que evita que
+  mandando a cada quadro só o que mudou. O `timg` entrega cada quadro assim que o recebe e o `ytm`
+  mostra cada um na hora certa do áudio, então nenhum quadro se perde quando o download demora. Envia bem menos dados ao terminal, o que evita que
   terminais mais simples se percam com o vídeo (como o texto da tela virando quadrantes).
 - `interno`: o desenho próprio do `ytm`, que redesenha a área inteira a cada quadro.
 
@@ -103,14 +116,20 @@ link do clipe no YouTube (`ytm --visual video "https://www.youtube.com/watch?v=.
 
 O visual `vazio` deixa a área da animação em branco.
 
-No canto direito do título fica o HUD: quanto o tocador está usando de CPU e de memória,
-atualizado a cada segundo; a tecla `h` mostra ou esconde. A conta soma o próprio tocador e os
-processos que ele abre (`yt-dlp` e `ffmpeg`). A CPU segue o padrão do Monitor de Atividade: 100%
-equivale a um núcleo inteiro.
+No canto direito do título fica a versão do programa (por exemplo `V.2.01`) e, à direita dela, o HUD:
+quanto o tocador está usando de CPU e de memória, atualizado a cada segundo; a tecla `h` mostra ou
+esconde o HUD (a versão continua aparecendo). A conta soma o próprio tocador e os
+processos que ele abre (`ytm-helper`, `yt-dlp`, `ffmpeg` e `timg`). A CPU segue o padrão do Monitor de
+Atividade: 100% equivale a um núcleo inteiro.
+
+Nos testes (terminal de 120×36), o uso de CPU foi de ~16% nas barras e no `vazio`, ~18% na letra,
+~22% no espelho e ~30% na onda. A versão em Python (1.x) gastava de um terço à metade disso nos visuais
+comuns: montar o texto colorido de cada quadro é mais lento em R.
 
 ## Integração com o macOS
 
-Ao tocar, o `ytm` aparece para o macOS como um tocador de música:
+Ao tocar, o `ytm` aparece para o macOS como um tocador de música (essa parte é feita pelo ajudante
+`ytm-helper`):
 
 - **Tocando Agora** (Central de Controle): título, artista, álbum, capa, duração e posição da música.
   As teclas de mídia do teclado (⏯ ⏭ ⏮), os controles dos AirPods e a barra de posição do

@@ -1,5 +1,59 @@
 # Notas de versão
 
+## v2.01 — Versão na tela
+
+Branch: `release-2.01`
+
+- **Versão do programa no título**, à esquerda do HUD de CPU e memória:
+  `V.2.01 · CPU 16.4% · MEM 347 MB`. A versão segue o nome da branch da release (`release-2.01` →
+  `V.2.01`) e fica na constante `YTM_VERSION`, em `R/util.R`.
+- A tecla `h` esconde só o HUD; a versão continua no canto direito.
+- **A ajuda também mostra a versão**: `ytm -h` (e `-help`, `--help` ou só `ytm`) diz
+  "Versão 2.01 (linha 2.x, em R)." logo abaixo da descrição.
+
+## v2.0.0 — Tocador em R
+
+Branch: `release-2.0`
+
+O código foi todo reescrito em R. O que o R não faz sozinho no macOS ficou num pequeno ajudante em
+Swift (`helper/ytm-helper`). Opções, teclas, visuais e integração com o macOS continuam os mesmos.
+
+### Como ficou
+
+- **R** (`ytm.R` e a pasta `R/`): opções e ajuda, busca, fila, pré-carga da próxima música, letra,
+  visuais (barras, espelho, onda, letra, vídeo e vazio), FFT, HUD e a tela. O que antes rodava em
+  threads (dados da faixa, letra, vídeo) agora são processos em segundo plano conferidos a cada quadro.
+- **Ajudante em Swift**: toca o áudio (AVAudioEngine) e avisa quantos quadros já saíram no
+  alto-falante; cuida do Tocando Agora, das teclas de mídia, dos controles do fone e do ícone na
+  barra de menus; avisa o tamanho do terminal quando a janela muda.
+- **Programas usados**: `yt-dlp` agora é o programa do Homebrew, e não mais a biblioteca do Python.
+  Pacotes do R: `processx`, `jsonlite` e `ps`, instalados na pasta `.Rlib` do projeto.
+- Saíram `ytm.py`, `macos.py` e `requirements.txt`. A pasta `.venv` da versão 1.x não é mais usada.
+
+### Novidades e correções
+
+- **Mensagens de erro das opções em português**, por exemplo
+  `valor inválido para --visual: 'xyz' (aceitos: barras, espelho, ...)`.
+- **Opções curtas juntas e com valor colado**: `-sr`, `-n10`, `--volume=50`.
+- **Pausa sem perder trecho**: o áudio que já tinha sido entregue e ainda não tinha tocado é guardado
+  e tocado ao continuar. O mesmo vale quando a saída de áudio muda (por exemplo, ao desconectar o fone).
+- **`--radio` com um link** agora enfileira 50 músicas do rádio, como o `--radio` com uma busca. Antes
+  vinha só 1, porque o padrão de `-n` é 1. Com `-n` maior que 1, vale o `-n`.
+- **Vídeo pelo `timg` sem travar no começo.** O YouTube agora obriga cada download a esperar alguns
+  segundos, e o `timg` descartava os quadros que chegavam atrasados. Agora o vídeo só abre depois que
+  o áudio começa, e o `timg` entrega cada quadro assim que o recebe (`--debug-no-frame-delay`): quem
+  decide a hora de mostrar é o `ytm`. Nos testes, o vídeo ficou a 30–50 ms do áudio.
+
+### Observações
+
+- **CPU**: nos testes (terminal de 120×36), ~16% nas barras, ~18% na letra, ~22% no espelho e ~30% na
+  onda, contra 7–14% da versão em Python. No vídeo as duas ficam parecidas (~34% na qualidade `alta`
+  com o `timg`).
+- **Memória**: o R guarda a memória que já usou, então o processo fica com ~190 MB nos visuais comuns
+  e chega a ~330 MB depois de usar o vídeo. Não cresce sem parar.
+- **Sincronia**: a posição da música agora vem do próprio ajudante (quadros que já saíram no
+  alto-falante). Com fones Bluetooth o atraso do fone pode não estar incluído; use `]` ou `--sync`.
+
 ## v1.5.1 — Ajuda do comando
 
 Branch: `ajuda-do-comando`
