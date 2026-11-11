@@ -3,6 +3,7 @@
 HELP_TEXT <- 'uso: ytm [opções] <busca ou link>
 
 Toca músicas e playlists do YouTube Music no terminal, com visualizador de áudio.
+Versão {versao} (linha 2.x, em R).
 
 o que tocar:
   busca ou link        termo de busca, ou link do YouTube / YouTube Music
@@ -57,6 +58,7 @@ exemplos:
   ytm --visual video bohemian rhapsody   abre direto no videoclipe
   ytm -s -r "https://music.youtube.com/playlist?list=..."   aleatório, repetindo
 '
+HELP_TEXT <- sub("{versao}", YTM_VERSION, HELP_TEXT, fixed = TRUE)
 
 # nome da opção -> (campo, tipo, valores aceitos)
 OPTIONS <- list(
