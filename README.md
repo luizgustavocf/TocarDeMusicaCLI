@@ -116,8 +116,9 @@ link do clipe no YouTube (`ytm --visual video "https://www.youtube.com/watch?v=.
 
 O visual `vazio` deixa a área da animação em branco.
 
-No canto direito do título fica o HUD: quanto o tocador está usando de CPU e de memória,
-atualizado a cada segundo; a tecla `h` mostra ou esconde. A conta soma o próprio tocador e os
+No canto direito do título fica a versão do programa (por exemplo `V.2.01`) e, à direita dela, o HUD:
+quanto o tocador está usando de CPU e de memória, atualizado a cada segundo; a tecla `h` mostra ou
+esconde o HUD (a versão continua aparecendo). A conta soma o próprio tocador e os
 processos que ele abre (`ytm-helper`, `yt-dlp`, `ffmpeg` e `timg`). A CPU segue o padrão do Monitor de
 Atividade: 100% equivale a um núcleo inteiro.
 

@@ -1,5 +1,14 @@
 # Notas de versão
 
+## v2.01 — Versão na tela
+
+Branch: `release-2.01`
+
+- **Versão do programa no título**, à esquerda do HUD de CPU e memória:
+  `V.2.01 · CPU 16.4% · MEM 347 MB`. A versão segue o nome da branch da release (`release-2.01` →
+  `V.2.01`) e fica na constante `YTM_VERSION`, em `R/util.R`.
+- A tecla `h` esconde só o HUD; a versão continua no canto direito.
+
 ## v2.0.0 — Tocador em R
 
 Branch: `release-2.0`

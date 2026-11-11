@@ -7,7 +7,9 @@ build_frame <- function(p, v, pm, vf, cols, rows, t_now) {
   icon <- if (p$state == "loading" || buffering) SPINNER[floor(t_now * 12) %% length(SPINNER) + 1]
           else if (p$state == "error") "✕" else if (p$paused) "⏸" else "▶"
 
-  stats <- if (pm$visible) sprintf("CPU %4.1f%% · MEM %.0f MB ", pm$cpu, pm$mem / 2^20) else ""
+  # canto direito do título: versão, e o HUD de CPU e memória à direita dela (a tecla h esconde só o HUD)
+  stats <- paste0("V.", YTM_VERSION, " ",
+                  if (pm$visible) sprintf("· CPU %4.1f%% · MEM %.0f MB ", pm$cpu, pm$mem / 2^20) else "")
   title <- trunc_text(if (nzchar(t$title)) t$title else "Carregando…", cols - dwidth(stats) - 5)
   gap <- cols - 3 - dwidth(title) - dwidth(stats)
   head1 <- paste0(" ", accent, icon, RESET, " ", BOLD, title, RESET, strrep(" ", max(gap, 1)), DIM, stats, RESET)

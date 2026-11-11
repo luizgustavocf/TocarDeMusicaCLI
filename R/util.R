@@ -1,5 +1,7 @@
 # Constantes, texto e cores usados por todo o tocador.
 
+YTM_VERSION <- "2.01"  # versão do programa: segue o nome da branch da release (release-2.01)
+
 SR <- 44100L          # amostras por segundo
 CH <- 2L              # estéreo
 CHUNK <- 1024L        # quadros por mensagem de áudio enviada ao ajudante
