@@ -37,6 +37,8 @@ ytm --visual letra garota de ipanema  # abre direto na letra sincronizada
 ytm --visual video bohemian rhapsody  # abre direto no videoclipe
 ```
 
+`ytm -h` (ou `ytm -help`, `ytm --help` e só `ytm`) mostra todas as opções, as teclas e exemplos.
+
 Opções: `--visual barras|espelho|onda|letra|video|vazio`, `--cores neon|arco-iris|fogo|oceano|vu|preto-branco|cinza`,
 `--volume 0-100`, `--sync MS`, `--single` (num link com `&list=`, toca só a música),
 `--qualidade-video alta|media|baixa` (qualidade do visual `video`; padrão `alta`),
