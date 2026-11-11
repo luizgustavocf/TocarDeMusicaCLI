@@ -1,5 +1,15 @@
 # Notas de versão
 
+## v1.5.2 — Versão na tela
+
+Branch: `python-1.x`
+
+- **Versão do programa no título**, à esquerda do HUD de CPU e memória: `V.1.5.2 · CPU 8.8% · MEM 301 MB`.
+  A tecla `h` esconde só o HUD; a versão continua no canto direito. A ajuda (`ytm -h`) também mostra a
+  versão.
+- A linha 1.x (Python) passa a viver na branch `python-1.x`; a `main` segue com a 2.x, em R. O README
+  explica como deixar as duas instaladas juntas (comandos `ytm1` e `ytm`).
+
 ## v1.5.1 — Ajuda do comando
 
 Branch: `ajuda-do-comando`

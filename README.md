@@ -1,5 +1,9 @@
 # ytm — YouTube Music no terminal
 
+> Esta é a linha **1.x, em Python** (branch `python-1.x`). A partir da 2.0, a `main` segue com a
+> versão reescrita em R. As duas podem ficar instaladas juntas, em pastas separadas: veja
+> [Usar junto com a 2.x](#usar-junto-com-a-2x).
+
 Tocador de música para o terminal do macOS que busca no YouTube Music e toca uma música,
 uma fila de resultados, uma playlist ou um rádio, com animações que seguem o ritmo da música,
 letra sincronizada com a voz, o videoclipe direto no terminal e o consumo de CPU e memória do
@@ -103,8 +107,9 @@ link do clipe no YouTube (`ytm --visual video "https://www.youtube.com/watch?v=.
 
 O visual `vazio` deixa a área da animação em branco.
 
-No canto direito do título fica o HUD: quanto o tocador está usando de CPU e de memória,
-atualizado a cada segundo; a tecla `h` mostra ou esconde. A conta soma o próprio tocador e os
+No canto direito do título fica a versão do programa (por exemplo `V.1.5.2`) e, à direita dela, o HUD:
+quanto o tocador está usando de CPU e de memória, atualizado a cada segundo; a tecla `h` mostra ou
+esconde o HUD (a versão continua aparecendo). A conta soma o próprio tocador e os
 processos que ele abre (`yt-dlp` e `ffmpeg`). A CPU segue o padrão do Monitor de Atividade: 100%
 equivale a um núcleo inteiro.
 
@@ -129,3 +134,18 @@ parecerem adiantados, use `]` durante a reprodução ou inicie com `--sync 200`.
 
 A primeira música leva alguns segundos para começar porque o YouTube impõe uma espera antes
 do download; as seguintes são pré-carregadas enquanto a atual toca.
+
+## Usar junto com a 2.x
+
+A 1.x (Python) e a 2.x (R) podem ficar instaladas ao mesmo tempo, cada uma na sua pasta e com o seu
+comando. Com o `git worktree`, o mesmo repositório fica em duas pastas:
+
+```bash
+git worktree add ../TocarDeMusicaCLI-1.x python-1.x
+cd ../TocarDeMusicaCLI-1.x && ./install.sh
+ln -sf "$PWD/ytm" /opt/homebrew/bin/ytm1
+```
+
+Depois disso, `ytm1` toca com a 1.x e `ytm` com a 2.x. Cada uma usa as dependências da própria pasta
+(`.venv` na 1.x; `.Rlib` e `helper/` na 2.x). Não deixe as duas abertas ao mesmo tempo: cada uma cria
+o próprio ícone na barra de menus e as duas disputam as teclas de mídia.

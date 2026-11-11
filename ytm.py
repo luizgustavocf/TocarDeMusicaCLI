@@ -34,6 +34,8 @@ import psutil
 import sounddevice as sd
 import yt_dlp
 
+VERSION = '1.5.2'  # versão do programa (linha 1.x, em Python)
+
 SR = 44100
 CH = 2
 BLOCK = 1024
@@ -1073,7 +1075,8 @@ def build_frame(player, viz, perf, video, cols, rows, now):
     else:
         icon = '⏸' if player.paused else '▶'
 
-    stats = f'CPU {perf.cpu:4.1f}% · MEM {perf.mem / 2**20:.0f} MB ' if perf.visible else ''
+    # canto direito do título: versão, e o HUD de CPU e memória à direita dela (a tecla h esconde só o HUD)
+    stats = f'V.{VERSION} ' + (f'· CPU {perf.cpu:4.1f}% · MEM {perf.mem / 2**20:.0f} MB ' if perf.visible else '')
     title = trunc(t.title or 'Carregando…', cols - dwidth(stats) - 5)
     gap = cols - 3 - dwidth(title) - dwidth(stats)
     head1 = f' {accent}{icon}{RESET} {BOLD}{title}{RESET}{" " * max(gap, 1)}{DIM}{stats}{RESET}'
@@ -1292,7 +1295,8 @@ def build_parser():
     ap = argparse.ArgumentParser(
         prog='ytm',
         usage='ytm [opções] <busca ou link>',
-        description='Toca músicas e playlists do YouTube Music no terminal, com visualizador de áudio.',
+        description=f'Toca músicas e playlists do YouTube Music no terminal, com visualizador de áudio.\n'
+                    f'Versão {VERSION} (linha 1.x, em Python).',
         epilog=HELP_EPILOG,
         formatter_class=_HelpFormatter,
         add_help=False)
