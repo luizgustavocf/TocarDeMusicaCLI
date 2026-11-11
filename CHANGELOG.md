@@ -1,5 +1,11 @@
 # Notas de versão
 
+## v2.02 — em andamento
+
+Branch: `release-2.02`
+
+- Versão do programa passa a ser `V.2.02` (título e `ytm -h`).
+
 ## v2.01 — Versão na tela
 
 Branch: `release-2.01`
