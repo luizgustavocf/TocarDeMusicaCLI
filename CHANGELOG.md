@@ -1,5 +1,17 @@
 # Notas de versão
 
+## v1.5.1 — Ajuda do comando
+
+Branch: `ajuda-do-comando`
+
+- **`ytm -h`, `ytm -help`, `ytm --help` e `ytm` sozinho** mostram a ajuda. Antes, `ytm` sem nada só
+  mostrava um erro, e o `-help` funcionava por acaso.
+- A ajuda ficou toda em português (antes apareciam "usage", "options" e "show this help message"),
+  com uma linha de uso curta, as opções agrupadas (o que tocar, som e tela, vídeo, macOS), os valores
+  aceitos e o padrão de cada uma, as teclas usadas durante a música e mais exemplos.
+- O `install.sh` agora usa um Python 3.10 ou mais novo (o `python3` do macOS é o 3.9, que não roda o
+  `ytm`) e recria o ambiente virtual se ele foi feito com um Python antigo.
+
 ## v1.5.0 — Melhorias no vídeo
 
 Branch: `melhorias-no-video`

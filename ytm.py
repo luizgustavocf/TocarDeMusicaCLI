@@ -1252,38 +1252,93 @@ def start_mac(player, args):
         return None
 
 
-def main():
+HELP_EPILOG = """\
+teclas durante a música:
+  espaço        pausar / continuar
+  ← / →         voltar / avançar 10 s
+  n / p         próxima / anterior
+  ↑ / ↓, + / -  volume
+  v             trocar visual (barras, espelho, onda, letra, video, vazio)
+  c             trocar paleta de cores
+  g             trocar a qualidade do vídeo (alta → media → baixa)
+  m             trocar o motor do vídeo (timg ↔ interno)
+  [ / ]         ajustar a sincronia da animação, da letra e do vídeo (±20 ms)
+  r             repetir a fila
+  h             mostrar / esconder o HUD de CPU e memória
+  q             sair
+
+exemplos:
+  ytm bohemian rhapsody                  toca a primeira música encontrada
+  ytm -n 10 daft punk                    enfileira os 10 primeiros resultados
+  ytm -p rock classico                   busca uma playlist e toca
+  ytm --radio tiny dancer                toca a música e continua com o rádio dela
+  ytm --visual letra garota de ipanema   abre direto na letra sincronizada
+  ytm --visual video bohemian rhapsody   abre direto no videoclipe
+  ytm -s -r "https://music.youtube.com/playlist?list=..."   aleatório, repetindo
+"""
+
+
+class _HelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Ajuda em português e com colunas um pouco mais largas."""
+
+    def __init__(self, prog):
+        super().__init__(prog, max_help_position=30)
+
+    def add_usage(self, usage, actions, groups, prefix=None):
+        super().add_usage(usage, actions, groups, prefix='uso: ')
+
+
+def build_parser():
     ap = argparse.ArgumentParser(
         prog='ytm',
+        usage='ytm [opções] <busca ou link>',
         description='Toca músicas e playlists do YouTube Music no terminal, com visualizador de áudio.',
-        epilog='exemplos:\n'
-               '  ytm bohemian rhapsody            toca a primeira música encontrada\n'
-               '  ytm -n 10 daft punk              enfileira os 10 primeiros resultados\n'
-               '  ytm -p rock classico             busca uma playlist e toca\n'
-               '  ytm --radio tiny dancer          toca a música e continua com o rádio dela\n'
-               '  ytm "https://music.youtube.com/playlist?list=..."',
-        formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('query', nargs='+', help='termo de busca ou link do YouTube / YouTube Music')
-    ap.add_argument('-p', '--playlist', action='store_true', help='buscar uma playlist em vez de uma música')
-    ap.add_argument('-n', type=int, default=1, metavar='N', help='enfileirar os N primeiros resultados da busca')
-    ap.add_argument('--radio', action='store_true', help='depois da música, continuar com o rádio (mix) dela')
-    ap.add_argument('--single', action='store_true', help='num link com &list=, tocar só a música')
-    ap.add_argument('-s', '--shuffle', action='store_true', help='ordem aleatória')
-    ap.add_argument('-r', '--repeat', action='store_true', help='repetir a fila ao terminar')
-    ap.add_argument('--volume', type=int, default=100, help='volume inicial 0-100 (padrão 100)')
-    ap.add_argument('--visual', choices=MODES, default='barras', help='estilo da animação')
-    ap.add_argument('--cores', choices=list(PALETTES), default='neon', help='paleta de cores')
-    ap.add_argument('--motor-video', choices=['timg', 'interno'], default='timg',
-                    help='quem desenha o visual video: timg (padrão, se instalado; redesenha só o que muda) '
-                         'ou interno (o desenho próprio do ytm)')
-    ap.add_argument('--qualidade-video', choices=list(VIDEO_QUALITY), default='alta',
-                    help='qualidade do visual video: alta (720p, 30 qps, 4 pixels por caractere), '
-                         'media (480p, 24 qps) ou baixa (360p, 15 qps); padrão alta')
-    ap.add_argument('--sem-mac', action='store_true',
-                    help='não integrar com o macOS (Tocando Agora, barra de menus e notificações)')
-    ap.add_argument('--sem-notificacao', action='store_true', help='não mostrar notificação a cada música')
-    ap.add_argument('--sync', type=int, default=0, metavar='MS',
-                    help='atraso extra da animação em ms (ex.: 200 para fones Bluetooth)')
+        epilog=HELP_EPILOG,
+        formatter_class=_HelpFormatter,
+        add_help=False)
+
+    o = ap.add_argument_group('o que tocar')
+    o.add_argument('query', nargs='+', metavar='busca ou link',
+                   help='termo de busca, ou link do YouTube / YouTube Music')
+    o.add_argument('-p', '--playlist', action='store_true', help='buscar uma playlist em vez de uma música')
+    o.add_argument('-n', type=int, default=1, metavar='N', help='enfileirar os N primeiros resultados da busca')
+    o.add_argument('--radio', action='store_true', help='depois da música, continuar com o rádio (mix) dela')
+    o.add_argument('--single', action='store_true', help='num link com &list=, tocar só a música')
+    o.add_argument('-s', '--shuffle', action='store_true', help='ordem aleatória')
+    o.add_argument('-r', '--repeat', action='store_true', help='repetir a fila ao terminar')
+
+    t = ap.add_argument_group('som e tela')
+    t.add_argument('--volume', type=int, default=100, metavar='0-100', help='volume inicial (padrão 100)')
+    t.add_argument('--visual', choices=MODES, default='barras', metavar='VISUAL',
+                   help=f'estilo da animação: {", ".join(MODES)} (padrão barras)')
+    t.add_argument('--cores', choices=list(PALETTES), default='neon', metavar='PALETA',
+                   help=f'paleta de cores: {", ".join(PALETTES)} (padrão neon)')
+    t.add_argument('--sync', type=int, default=0, metavar='MS',
+                   help='atraso extra da animação, da letra e do vídeo em ms (ex.: 200 para fones Bluetooth)')
+
+    v = ap.add_argument_group('vídeo (visual video)')
+    v.add_argument('--qualidade-video', choices=list(VIDEO_QUALITY), default='alta', metavar='Q',
+                   help='alta (720p, 30 qps, 2×2 pixels por caractere), media (480p, 24 qps) '
+                        'ou baixa (360p, 15 qps); padrão alta')
+    v.add_argument('--motor-video', choices=['timg', 'interno'], default='timg', metavar='MOTOR',
+                   help='timg (padrão, se instalado; redesenha só o que muda) '
+                        'ou interno (o desenho próprio do ytm)')
+
+    m = ap.add_argument_group('macOS')
+    m.add_argument('--sem-notificacao', action='store_true', help='não mostrar notificação a cada música')
+    m.add_argument('--sem-mac', action='store_true',
+                   help='não integrar com o macOS (Tocando Agora, barra de menus e notificações)')
+
+    g = ap.add_argument_group('ajuda')
+    g.add_argument('-h', '-help', '--help', action='help', help='mostrar esta ajuda e sair')
+    return ap
+
+
+def main():
+    ap = build_parser()
+    if len(sys.argv) == 1:
+        ap.print_help()
+        return
     args = ap.parse_args()
 
     if not shutil.which('ffmpeg'):
